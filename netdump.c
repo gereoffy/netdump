@@ -9,7 +9,7 @@
  *
  * No name resolution: addresses and ports are always numeric.
  * Supports Linux and macOS, Ethernet interfaces, IPv4/IPv6
- * (+ARP, ICMPv6, DHCP, DNS, mDNS, QUIC).
+ * (+ARP, ICMPv6, DHCP, DNS, mDNS, QUIC, RADIUS).
  */
 
 #include <pcap.h>
@@ -190,6 +190,15 @@ static const char *dhcp_msg_names[] = {
     [8] = "INFORM",
 };
 
+/* copy a protocol string field, replacing non-printable bytes with '?' */
+static void copy_printable(char *dst, size_t n, const u_char *src, size_t len)
+{
+    size_t k;
+    for (k = 0; k < len && k < n - 1; k++)
+        dst[k] = (src[k] >= 0x20 && src[k] < 0x7f) ? src[k] : '?';
+    dst[k] = '\0';
+}
+
 /*
  * DHCP summary: message type, then the hostname for client messages or
  * the assigned address for OFFER/ACK. Returns 0 if it's not DHCP.
@@ -215,10 +224,7 @@ static int fmt_dhcp(char *out, size_t n, const u_char *d, size_t len)
         if (opt == DHCP_OPT_MSGTYPE && olen >= 1) {
             type = d[i];
         } else if (opt == DHCP_OPT_HOST) {
-            size_t k;
-            for (k = 0; k < olen && k < sizeof host - 1; k++)
-                host[k] = (d[i + k] >= 0x20 && d[i + k] < 0x7f) ? d[i + k] : '?';
-            host[k] = '\0';
+            copy_printable(host, sizeof host, d + i, olen);
         }
         i += olen;
     }
@@ -506,6 +512,49 @@ static int fmt_mdns(char *out, size_t n, const u_char *d, size_t len,
     return 1;
 }
 
+#define RADIUS_PORT     1812
+#define RADIUS_HDR_LEN  20
+#define RADIUS_ATTR_USER_NAME 1
+
+static const char *radius_code_names[] = {
+    [1]  = "Access-Request",
+    [2]  = "Access-Accept",
+    [3]  = "Access-Reject",
+    [11] = "Access-Challenge",
+};
+
+/*
+ * RADIUS (UDP 1812): packet type and the user name, if the packet has one
+ * (requests do, answers usually don't). Returns 0 if it doesn't look like
+ * RADIUS.
+ */
+static int fmt_radius(char *out, size_t n, const u_char *d, size_t len)
+{
+    char user[64] = "";
+
+    if (len < RADIUS_HDR_LEN)
+        return 0;
+    uint8_t code = d[0];
+    size_t rlen = rd16(d + 2);
+    if (rlen < RADIUS_HDR_LEN || code >= NELEM(radius_code_names) ||
+        !radius_code_names[code])
+        return 0;
+    if (rlen < len)
+        len = rlen;
+
+    for (size_t i = RADIUS_HDR_LEN; i + 2 <= len; ) {
+        uint8_t type = d[i], alen = d[i + 1];
+        if (alen < 2 || i + alen > len)
+            break;
+        if (type == RADIUS_ATTR_USER_NAME)
+            copy_printable(user, sizeof user, d + i + 2, alen - 2);
+        i += alen;
+    }
+
+    snprintf(out, n, "%s%s%s", radius_code_names[code], user[0] ? " " : "", user);
+    return 1;
+}
+
 #define QUIC_PORT       443
 #define QUIC_FIXED_BIT  0x40
 #define QUIC_LONG_HDR   0x80
@@ -630,7 +679,7 @@ static void fmt_icmp_error(char *out, size_t n, const u_char *icmp, size_t len)
 #define MAX_COUNTERS 32
 
 struct counter {
-    char name[16];
+    char name[24];
     unsigned long n;
 };
 
@@ -649,6 +698,8 @@ static struct group st_dhcp = { "DHCP", 4, 4,
     { {"DISCOVER", 0}, {"OFFER", 0}, {"REQUEST", 0}, {"ACK", 0} } };
 static struct group st_dns = { "DNS", 2, 2, { {"query", 0}, {"response", 0} } };
 static struct group st_mdns = { "mDNS", 2, 2, { {"query", 0}, {"response", 0} } };
+static struct group st_radius = { "RADIUS", 3, 3,
+    { {"Access-Request", 0}, {"Access-Accept", 0}, {"Access-Reject", 0} } };
 static struct group st_quic = { "QUIC", 3, 3,
     { {"client-Initial", 0}, {"server-Initial", 0}, {"Handshake", 0} } };
 static struct group st_icmp = { "ICMP", 2, 2,
@@ -719,6 +770,7 @@ static void print_stats(void)
     print_group(&st_dhcp, 0);
     print_group(&st_dns, 0);
     print_group(&st_mdns, 0);
+    print_group(&st_radius, 0);
     print_group(&st_quic, 0);
     print_group(&st_icmp, 0);
     print_group(&st_icmp6, 0);
@@ -782,6 +834,10 @@ static void decode_tcp_udp(struct pkt *pk, uint8_t p, const u_char *l4,
     } else if ((sp == MDNS_PORT || dp == MDNS_PORT) &&
                fmt_mdns(tmp, sizeof tmp, l4 + 8, avail, &pk->mdns_resp)) {
         strcpy(pk->proto, "mDNS");
+        strcpy(pk->info, tmp);
+    } else if ((sp == RADIUS_PORT || dp == RADIUS_PORT) &&
+               fmt_radius(tmp, sizeof tmp, l4 + 8, avail)) {
+        strcpy(pk->proto, "RADIUS");
         strcpy(pk->info, tmp);
     } else if (sp == QUIC_PORT || dp == QUIC_PORT) {
         tmp[0] = '\0';
@@ -1008,6 +1064,8 @@ static void count_stats(const struct pkt *pk, const char *label)
                 count(&st_dns, "RCODE?");
         }
     }
+    if (!strcmp(pk->proto, "RADIUS"))
+        count(&st_radius, pk->info);
     if (!strcmp(pk->proto, "mDNS"))
         count(&st_mdns, pk->mdns_resp ? "response" : "query");
     if (!strcmp(pk->proto, "QUIC") && pk->info[0] && pk->info[0] != '(') {

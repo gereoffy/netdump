@@ -109,6 +109,7 @@ Values of the `proto` column:
 | `DHCP`             | DHCP (UDP ports 67/68), see below |
 | `DNS`              | DNS (UDP port 53), see below |
 | `mDNS`             | multicast DNS / Bonjour / Avahi (UDP port 5353), see below |
+| `RADIUS`           | RADIUS authentication (UDP port 1812), see below |
 | `QUIC`             | QUIC / HTTP/3 (UDP port 443), see below |
 | `TCP6`, `UDP6`, `ICMP6`, `DNS6`, ... | the same over IPv6, see below |
 | `IPv6`             | IPv6 with another next header (shown as `next=N`) |
@@ -181,6 +182,16 @@ the first answer record:
 ```
 ... mDNS    5353  5353 PTR _googlecast._tcp.local +2
 ... mDNS    5353  5353 answer PTR _googlecast._tcp.local +5
+```
+
+For RADIUS (UDP port 1812), the info is the packet type (`Access-Request`,
+`Access-Accept`, `Access-Reject`, `Access-Challenge`) and the user name, if the
+packet contains one (requests do, answers usually don't). With 802.1X/EAP this
+is the outer identity, which may be anonymous (e.g. `anonymous@realm`):
+
+```
+... RADIUS 51234  1812 Access-Request alice@example.com
+... RADIUS  1812 51234 Access-Reject
 ```
 
 For QUIC (UDP port 443 with the QUIC fixed bit set), long header packets show
@@ -298,13 +309,14 @@ ARP:       request 50  reply 25  announce 3
 DHCP:      DISCOVER 2  OFFER 0  REQUEST 0  ACK 0
 DNS:       query 150  response 148  NXDOMAIN 3  SERVFAIL 1
 mDNS:      query 210  response 95
+RADIUS:    Access-Request 30  Access-Accept 12  Access-Reject 2  Access-Challenge 16
 QUIC:      client-Initial 40  server-Initial 38  Handshake 30
 ICMP:      echo-req 10  echo-reply 10  port-unr 12
 ```
 
 A group appears only if it had any traffic. Request/answer counters (SYN and
 SYN+ACK, ARP request and reply, DISCOVER/OFFER/REQUEST/ACK, DNS query and
-response, mDNS query and response, QUIC client and server Initial and Handshake, echo request and reply) are always shown within a group, because a
+response, mDNS query and response, RADIUS request/accept/reject, QUIC client and server Initial and Handshake, echo request and reply) are always shown within a group, because a
 zero there is the telling part; everything else only when non-zero. The
 counts only include packets that passed the BPF filter.
 
