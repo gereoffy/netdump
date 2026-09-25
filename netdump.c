@@ -267,6 +267,55 @@ static void fmt_icmp(char *out, size_t n, uint8_t type, uint8_t code)
         snprintf(out, n, "%u/%u", type, code);
 }
 
+static void fmt_ip_proto(char *out, size_t n, uint8_t p)
+{
+    switch (p) {
+    case IPPROTO_NUM_ICMP: snprintf(out, n, "ICMP"); break;
+    case IPPROTO_NUM_TCP:  snprintf(out, n, "TCP");  break;
+    case IPPROTO_NUM_UDP:  snprintf(out, n, "UDP");  break;
+    default:               snprintf(out, n, "%u", p); break;
+    }
+}
+
+/*
+ * ICMP error details from the quoted original datagram: its protocol and
+ * destination (ip[:port]), plus the next-hop MTU for frag-needed and the
+ * new gateway for redirects. icmp points to the ICMP header, len is the
+ * number of captured bytes from there.
+ */
+static void fmt_icmp_error(char *out, size_t n, const u_char *icmp, size_t len)
+{
+    uint8_t type = icmp[0], code = icmp[1];
+    char pname[8], addr[16];
+
+    out[0] = '\0';
+    if (type != 3 && type != 4 && type != 5 && type != 11 && type != 12)
+        return;
+    if (len < 8 + 20)
+        return;
+
+    const u_char *in = icmp + 8;
+    size_t ihl = (size_t)(in[0] & 0x0f) * 4;
+    if ((in[0] >> 4) != 4 || ihl < 20)
+        return;
+
+    fmt_ip_proto(pname, sizeof pname, in[9]);
+    fmt_ip(addr, sizeof addr, in + 16);
+    int w = snprintf(out, n, "%s %s", pname, addr);
+
+    int first_frag = (rd16(in + 6) & 0x1fff) == 0;
+    if ((in[9] == IPPROTO_NUM_TCP || in[9] == IPPROTO_NUM_UDP) &&
+        first_frag && len >= 8 + ihl + 4)
+        w += snprintf(out + w, n - w, ":%u", rd16(in + ihl + 2));
+
+    if (type == 3 && code == 4 && rd16(icmp + 6))
+        snprintf(out + w, n - w, " mtu=%u", rd16(icmp + 6));
+    else if (type == 5) {
+        fmt_ip(addr, sizeof addr, icmp + 4);
+        snprintf(out + w, n - w, " gw=%s", addr);
+    }
+}
+
 static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                           const u_char *pkt)
 {
@@ -346,12 +395,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
         fmt_ip(sip, sizeof sip, ip + 12);
         fmt_ip(dip, sizeof dip, ip + 16);
 
-        switch (p) {
-        case IPPROTO_NUM_ICMP: strcpy(proto, "ICMP"); break;
-        case IPPROTO_NUM_TCP:  strcpy(proto, "TCP");  break;
-        case IPPROTO_NUM_UDP:  strcpy(proto, "UDP");  break;
-        default: snprintf(proto, sizeof proto, "%u", p); break;
-        }
+        fmt_ip_proto(proto, sizeof proto, p);
 
         /* ports only in the first fragment */
         if ((p == IPPROTO_NUM_TCP || p == IPPROTO_NUM_UDP) &&
@@ -385,6 +429,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
             caplen >= off + ihl + 2) {
             const u_char *l4 = ip + ihl;
             fmt_icmp(icmp, sizeof icmp, l4[0], l4[1]);
+            fmt_icmp_error(info, sizeof info, l4, caplen - (off + ihl));
         }
     } else if (etype == ETHERTYPE_ARP) {
         const u_char *arp = pkt + off;
@@ -418,7 +463,9 @@ out:
            W_VLAN, vlan, W_MAC, smac, W_MAC, dmac,
            W_IP, sip, W_IP, dip, W_PROTO, proto);
     /* ICMP type replaces the two port columns */
-    if (icmp[0])
+    if (icmp[0] && info[0])
+        printf("%-*s %s\n", 2 * W_PORT + 1, icmp, info);
+    else if (icmp[0])
         printf("%s\n", icmp);
     else if (info[0])
         printf("%*s %*s %s\n", W_PORT, sport, W_PORT, dport, info);

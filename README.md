@@ -149,6 +149,18 @@ ICMP types, shortened to fit the port columns:
 | 3/11      | `net-tos-unr` | | other | `type/code`, e.g. `42/0` |
 | 3/12      | `hst-tos-unr` | | | |
 
+ICMP error messages (unreachable, time exceeded, redirect, source quench,
+parameter problem) quote the header of the packet that caused them. After the
+type, netdump shows that original packet's protocol and destination, plus the
+next-hop MTU for `frag-needed` and the new gateway for redirects:
+
+```
+... ICMP   port-unr    UDP 172.18.11.251:161
+... ICMP   frag-needed TCP 10.0.0.5:443 mtu=1400
+... ICMP   ttl-exceed  UDP 8.8.8.8:33434
+... ICMP   redir-host  ICMP 10.0.0.1 gw=172.18.11.1
+```
+
 The header line goes to stdout, status messages go to stderr. Output is
 line-buffered, so it shows up immediately in a pipe (`| grep`, `| tee`).
 
