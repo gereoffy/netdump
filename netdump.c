@@ -8,7 +8,7 @@
  *   vlan src-mac dst-mac src-ip dst-ip proto sport dport [info]
  *
  * No name resolution: addresses and ports are always numeric.
- * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP, DHCP, DNS).
+ * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP, DHCP, DNS, QUIC).
  */
 
 #include <pcap.h>
@@ -459,6 +459,41 @@ static int fmt_dns(char *out, size_t n, const u_char *d, size_t len,
     return 1;
 }
 
+#define QUIC_PORT       443
+#define QUIC_FIXED_BIT  0x40
+#define QUIC_LONG_HDR   0x80
+#define QUIC_V2         0x6b3343cfu
+
+/*
+ * QUIC (UDP 443): returns 0 if the fixed bit is not set (then it's
+ * something else on port 443). For long header packets out gets the
+ * packet type (Initial = connection start, like a TCP SYN); short header
+ * (data) packets leave out untouched.
+ */
+static int fmt_quic(char *out, size_t n, const u_char *d, size_t len)
+{
+    static const char *v1_types[] = { "Initial", "0-RTT", "Handshake", "Retry" };
+    static const char *v2_types[] = { "Retry", "Initial", "0-RTT", "Handshake" };
+
+    if (len < 1)
+        return 0;
+    if (!(d[0] & QUIC_LONG_HDR))
+        return (d[0] & QUIC_FIXED_BIT) != 0;
+    if (len < 5)
+        return 0;
+
+    uint32_t ver = ((uint32_t)d[1] << 24) | (d[2] << 16) | (d[3] << 8) | d[4];
+    unsigned t = (d[0] >> 4) & 3;
+    if (ver == 0) {
+        snprintf(out, n, "VersionNeg");     /* fixed bit is unused here */
+        return 1;
+    }
+    if (!(d[0] & QUIC_FIXED_BIT))
+        return 0;
+    snprintf(out, n, "%s", ver == QUIC_V2 ? v2_types[t] : v1_types[t]);
+    return 1;
+}
+
 /* ICMP type/code as short text (fits the port columns); unknown ones as "type/code" */
 static void fmt_icmp(char *out, size_t n, uint8_t type, uint8_t code)
 {
@@ -564,6 +599,8 @@ static struct group st_arp = { "ARP", 2, 2, { {"request", 0}, {"reply", 0} } };
 static struct group st_dhcp = { "DHCP", 4, 4,
     { {"DISCOVER", 0}, {"OFFER", 0}, {"REQUEST", 0}, {"ACK", 0} } };
 static struct group st_dns = { "DNS", 2, 2, { {"query", 0}, {"response", 0} } };
+static struct group st_quic = { "QUIC", 2, 2,
+    { {"Initial", 0}, {"Handshake", 0} } };
 static struct group st_icmp = { "ICMP", 2, 2,
     { {"echo-req", 0}, {"echo-reply", 0} } };
 
@@ -630,6 +667,7 @@ static void print_stats(void)
     print_group(&st_arp, 0);
     print_group(&st_dhcp, 0);
     print_group(&st_dns, 0);
+    print_group(&st_quic, 0);
     print_group(&st_icmp, 0);
 }
 
@@ -752,6 +790,13 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                                    &dns_resp, &dns_rcode)) {
                     strcpy(proto, "DNS");
                     strcpy(info, tmp);
+                } else if (sp == QUIC_PORT || dp == QUIC_PORT) {
+                    tmp[0] = '\0';
+                    if (fmt_quic(tmp, sizeof tmp, l4 + 8, avail)) {
+                        strcpy(proto, "QUIC");
+                        if (tmp[0])
+                            strcpy(info, tmp);
+                    }
                 }
             }
         }
@@ -814,6 +859,8 @@ out:
                 count(&st_dns, "RCODE?");
         }
     }
+    if (!strcmp(proto, "QUIC") && info[0] && info[0] != '(')
+        count(&st_quic, info);
     if (icmp[0])
         count(&st_icmp, icmp);
 

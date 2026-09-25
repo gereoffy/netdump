@@ -108,6 +108,7 @@ Values of the `proto` column:
 | `ARP`              | ARP |
 | `DHCP`             | DHCP (UDP ports 67/68), see below |
 | `DNS`              | DNS (UDP port 53), see below |
+| `QUIC`             | QUIC / HTTP/3 (UDP port 443), see below |
 | `IPv6`             | IPv6 (not decoded further) |
 | `0x....`           | other ethertype, in hex |
 | `STP`              | Spanning Tree BPDU (802.3/LLC, or Cisco PVST+ over SNAP) |
@@ -169,6 +170,11 @@ name exists but has no record of the asked type:
 
 Only DNS over UDP is decoded.
 
+For QUIC (UDP port 443 with the QUIC fixed bit set), long header packets show
+their type: `Initial` starts a connection (like a TCP SYN), then `Handshake`;
+also `0-RTT`, `Retry` and `VersionNeg`. Data packets show nothing (with `-v`,
+the payload length). Other traffic on UDP 443 (e.g. DTLS VPNs) stays `UDP`.
+
 For ARP, the info is the kind of message:
 
 | Info       | Meaning |
@@ -224,12 +230,13 @@ TCP:       SYN 120  SYN+ACK 118  FIN 90  RST 5
 ARP:       request 50  reply 25  announce 3
 DHCP:      DISCOVER 2  OFFER 0  REQUEST 0  ACK 0
 DNS:       query 150  response 148  NXDOMAIN 3  SERVFAIL 1
+QUIC:      Initial 40  Handshake 38
 ICMP:      echo-req 10  echo-reply 10  port-unr 12
 ```
 
 A group appears only if it had any traffic. Request/answer counters (SYN and
 SYN+ACK, ARP request and reply, DISCOVER/OFFER/REQUEST/ACK, DNS query and
-response, echo request and reply) are always shown within a group, because a
+response, QUIC Initial and Handshake, echo request and reply) are always shown within a group, because a
 zero there is the telling part; everything else only when non-zero. The
 counts only include packets that passed the BPF filter.
 
