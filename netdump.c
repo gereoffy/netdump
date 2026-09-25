@@ -638,13 +638,18 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                 size_t ulen = rd16(l4 + 4) > 8 ? rd16(l4 + 4) - 8u : 0;
                 if (ulen < avail)
                     avail = ulen;
+                /* decoders may leave partial output when they give up */
+                char tmp[sizeof info];
                 if ((sp == DHCP_SERVER_PORT || sp == DHCP_CLIENT_PORT) &&
                     (dp == DHCP_SERVER_PORT || dp == DHCP_CLIENT_PORT) &&
-                    fmt_dhcp(info, sizeof info, l4 + 8, avail))
+                    fmt_dhcp(tmp, sizeof tmp, l4 + 8, avail)) {
                     strcpy(proto, "DHCP");
-                else if ((sp == DNS_PORT || dp == DNS_PORT) &&
-                         fmt_dns(info, sizeof info, l4 + 8, avail))
+                    strcpy(info, tmp);
+                } else if ((sp == DNS_PORT || dp == DNS_PORT) &&
+                           fmt_dns(tmp, sizeof tmp, l4 + 8, avail)) {
                     strcpy(proto, "DNS");
+                    strcpy(info, tmp);
+                }
             }
         }
         if (p == IPPROTO_NUM_ICMP && frag_off == 0 && ihl >= 20 &&
