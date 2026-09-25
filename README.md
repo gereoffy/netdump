@@ -45,8 +45,8 @@ sudo ./netdump en0 arp or icmp
 ## Output
 
 ```
-vlan src-mac           dst-mac           src-ip          dst-ip          proto  sport dport flags
-     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 10.0.0.1        192.168.100.200 TCP    51234   443 S
+vlan src-mac           dst-mac           src-ip          dst-ip          proto  sport dport
+     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 10.0.0.1        192.168.100.200 TCP    51234   443 SYN
 100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         8.8.8.8         UDP     5353    53
 4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         ICMP   echo-req
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         47
@@ -65,9 +65,9 @@ vlan src-mac           dst-mac           src-ip          dst-ip          proto  
 | `proto`   | see below |
 | `sport`   | source port (TCP/UDP only) |
 | `dport`   | destination port (TCP/UDP only) |
-| `flags`   | TCP flags (TCP only), see below |
 
-For ICMP the two port columns hold the ICMP type instead (see below).
+After the ports, free-form protocol-specific info may follow (see below).
+For ICMP the two port columns hold the ICMP type instead.
 
 Values of the `proto` column:
 
@@ -87,9 +87,18 @@ Values of the `proto` column:
 802.3 frames carrying IPv4 or ARP in an RFC 1042 SNAP header are decoded the
 same way as Ethernet II frames.
 
-TCP flags use tcpdump notation and order: `F` FIN, `S` SYN, `R` RST, `P` PUSH,
-`.` ACK, `U` URG, `E` ECE, `W` CWR. So `S` is a new connection attempt, `S.`
-the SYN-ACK answer, `F.` a FIN-ACK and `R` / `R.` a reset.
+For TCP, the info after the ports is a readable summary of the flags:
+
+| Info       | Meaning |
+|------------|---------|
+| `SYN`      | new connection attempt |
+| `SYN+ACK`  | answer to a SYN |
+| `FIN`      | connection close |
+| `RESET`    | connection reset (RST) |
+| `len=N`    | PUSH segment carrying N bytes of payload |
+| (nothing)  | plain ACK |
+
+Several items can appear together, separated by spaces, e.g. `FIN len=12`.
 
 ICMP types, shortened to fit the port columns:
 
