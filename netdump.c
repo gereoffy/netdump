@@ -1,0 +1,281 @@
+/*
+ * netdump - minimal tcpdump alternative (libpcap)
+ *
+ * Usage: netdump <interface> [bpf filter expression...]
+ *
+ * One line per packet, fixed-width columns:
+ *   vlan src-mac dst-mac src-ip dst-ip proto sport dport
+ *
+ * No name resolution: addresses and ports are always numeric.
+ * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP).
+ */
+
+#include <pcap.h>
+
+#include <arpa/inet.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define SNAPLEN 256
+
+#define ETH_HDR_LEN   14
+#define VLAN_TAG_LEN  4
+
+#define ETHERTYPE_IPV4  0x0800
+#define ETHERTYPE_ARP   0x0806
+#define ETHERTYPE_8021Q 0x8100
+
+#define IPPROTO_NUM_ICMP 1
+#define IPPROTO_NUM_TCP  6
+#define IPPROTO_NUM_UDP  17
+
+/* column widths */
+#define W_VLAN  4
+#define W_MAC   17
+#define W_IP    15
+#define W_PROTO 6
+#define W_PORT  5
+
+static pcap_t *handle;
+
+static void on_signal(int sig)
+{
+    (void)sig;
+    if (handle)
+        pcap_breakloop(handle);
+}
+
+static uint16_t rd16(const u_char *p)
+{
+    return (uint16_t)((p[0] << 8) | p[1]);
+}
+
+static void fmt_mac(char *out, size_t n, const u_char *p)
+{
+    snprintf(out, n, "%02x:%02x:%02x:%02x:%02x:%02x",
+             p[0], p[1], p[2], p[3], p[4], p[5]);
+}
+
+static void fmt_ip(char *out, size_t n, const u_char *p)
+{
+    snprintf(out, n, "%u.%u.%u.%u", p[0], p[1], p[2], p[3]);
+}
+
+static void print_header(void)
+{
+    printf("%-*s %-*s %-*s %-*s %-*s %-*s %*s %*s\n",
+           W_VLAN, "vlan", W_MAC, "src-mac", W_MAC, "dst-mac",
+           W_IP, "src-ip", W_IP, "dst-ip", W_PROTO, "proto",
+           W_PORT, "sport", W_PORT, "dport");
+}
+
+static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
+                          const u_char *pkt)
+{
+    (void)user;
+
+    char vlan[8] = "", smac[18] = "", dmac[18] = "";
+    char sip[16] = "", dip[16] = "", proto[16] = "";
+    char sport[8] = "", dport[8] = "";
+
+    size_t caplen = h->caplen;
+    if (caplen < ETH_HDR_LEN)
+        return;
+
+    fmt_mac(dmac, sizeof dmac, pkt);
+    fmt_mac(smac, sizeof smac, pkt + 6);
+
+    size_t off = 12;
+    uint16_t etype = rd16(pkt + off);
+    off += 2;
+
+    if (etype == ETHERTYPE_8021Q) {
+        if (caplen < off + VLAN_TAG_LEN)
+            goto out;
+        snprintf(vlan, sizeof vlan, "%u", rd16(pkt + off) & 0x0fff);
+        etype = rd16(pkt + off + 2);
+        off += VLAN_TAG_LEN;
+    }
+
+    if (etype == ETHERTYPE_IPV4) {
+        const u_char *ip = pkt + off;
+        if (caplen < off + 20 || (ip[0] >> 4) != 4) {
+            snprintf(proto, sizeof proto, "0x%04x", etype);
+            goto out;
+        }
+        size_t ihl = (size_t)(ip[0] & 0x0f) * 4;
+        uint8_t p = ip[9];
+        int frag_off = rd16(ip + 6) & 0x1fff;
+
+        fmt_ip(sip, sizeof sip, ip + 12);
+        fmt_ip(dip, sizeof dip, ip + 16);
+
+        switch (p) {
+        case IPPROTO_NUM_ICMP: strcpy(proto, "ICMP"); break;
+        case IPPROTO_NUM_TCP:  strcpy(proto, "TCP");  break;
+        case IPPROTO_NUM_UDP:  strcpy(proto, "UDP");  break;
+        default: snprintf(proto, sizeof proto, "%u", p); break;
+        }
+
+        /* ports only in the first fragment */
+        if ((p == IPPROTO_NUM_TCP || p == IPPROTO_NUM_UDP) &&
+            frag_off == 0 && ihl >= 20 && caplen >= off + ihl + 4) {
+            const u_char *l4 = ip + ihl;
+            snprintf(sport, sizeof sport, "%u", rd16(l4));
+            snprintf(dport, sizeof dport, "%u", rd16(l4 + 2));
+        }
+    } else if (etype == ETHERTYPE_ARP) {
+        const u_char *arp = pkt + off;
+        strcpy(proto, "ARP");
+        /* Ethernet/IPv4 ARP: htype 1, ptype 0x0800, hlen 6, plen 4 */
+        if (caplen >= off + 28 && rd16(arp) == 1 &&
+            rd16(arp + 2) == ETHERTYPE_IPV4 && arp[4] == 6 && arp[5] == 4) {
+            fmt_ip(sip, sizeof sip, arp + 14);
+            fmt_ip(dip, sizeof dip, arp + 24);
+        }
+    } else {
+        snprintf(proto, sizeof proto, "0x%04x", etype);
+    }
+
+out:
+    printf("%-*s %-*s %-*s %-*s %-*s %-*s %*s %*s\n",
+           W_VLAN, vlan, W_MAC, smac, W_MAC, dmac,
+           W_IP, sip, W_IP, dip, W_PROTO, proto,
+           W_PORT, sport, W_PORT, dport);
+}
+
+static int list_interfaces(void)
+{
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_if_t *devs, *d;
+
+    if (pcap_findalldevs(&devs, errbuf) == -1) {
+        fprintf(stderr, "pcap_findalldevs: %s\n", errbuf);
+        return 1;
+    }
+
+    fprintf(stderr, "Available interfaces:\n");
+    for (d = devs; d; d = d->next) {
+        fprintf(stderr, "  %-16s", d->name);
+        for (pcap_addr_t *a = d->addresses; a; a = a->next) {
+            if (a->addr && a->addr->sa_family == AF_INET) {
+                char buf[INET_ADDRSTRLEN];
+                struct sockaddr_in *sin = (struct sockaddr_in *)a->addr;
+                inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof buf);
+                fprintf(stderr, " %s", buf);
+            }
+        }
+        if (d->description)
+            fprintf(stderr, "  (%s)", d->description);
+        fprintf(stderr, "\n");
+    }
+    pcap_freealldevs(devs);
+    return 0;
+}
+
+static void usage(const char *prog)
+{
+    fprintf(stderr, "Usage: %s <interface> [bpf filter expression...]\n\n", prog);
+}
+
+/* join argv[from..argc-1] with spaces into a malloc'd string */
+static char *join_args(int argc, char **argv, int from)
+{
+    size_t len = 1;
+    for (int i = from; i < argc; i++)
+        len += strlen(argv[i]) + 1;
+
+    char *s = malloc(len);
+    if (!s)
+        return NULL;
+    s[0] = '\0';
+    for (int i = from; i < argc; i++) {
+        if (i > from)
+            strcat(s, " ");
+        strcat(s, argv[i]);
+    }
+    return s;
+}
+
+int main(int argc, char **argv)
+{
+    char errbuf[PCAP_ERRBUF_SIZE];
+
+    if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
+        usage(argv[0]);
+        list_interfaces();
+        return 1;
+    }
+
+    const char *dev = argv[1];
+
+    handle = pcap_create(dev, errbuf);
+    if (!handle) {
+        fprintf(stderr, "%s: %s\n", dev, errbuf);
+        return 1;
+    }
+    pcap_set_snaplen(handle, SNAPLEN);
+    pcap_set_promisc(handle, 1);
+    pcap_set_immediate_mode(handle, 1);
+    pcap_set_timeout(handle, 100);
+
+    int rc = pcap_activate(handle);
+    if (rc < 0) {
+        fprintf(stderr, "%s: %s\n", dev, pcap_geterr(handle));
+        pcap_close(handle);
+        return 1;
+    } else if (rc > 0) {
+        fprintf(stderr, "%s: warning: %s\n", dev, pcap_geterr(handle));
+    }
+
+    if (pcap_datalink(handle) != DLT_EN10MB) {
+        fprintf(stderr, "%s: not an Ethernet interface (link type %s)\n",
+                dev, pcap_datalink_val_to_name(pcap_datalink(handle)));
+        pcap_close(handle);
+        return 1;
+    }
+
+    if (argc > 2) {
+        char *expr = join_args(argc, argv, 2);
+        struct bpf_program fp;
+        if (!expr) {
+            perror("malloc");
+            pcap_close(handle);
+            return 1;
+        }
+        if (pcap_compile(handle, &fp, expr, 1, PCAP_NETMASK_UNKNOWN) == -1 ||
+            pcap_setfilter(handle, &fp) == -1) {
+            fprintf(stderr, "filter '%s': %s\n", expr, pcap_geterr(handle));
+            free(expr);
+            pcap_close(handle);
+            return 1;
+        }
+        pcap_freecode(&fp);
+        free(expr);
+    }
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_signal;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    fprintf(stderr, "listening on %s\n", dev);
+    print_header();
+
+    rc = pcap_loop(handle, -1, handle_packet, NULL);
+    if (rc == -1)
+        fprintf(stderr, "pcap_loop: %s\n", pcap_geterr(handle));
+
+    struct pcap_stat st;
+    if (pcap_stats(handle, &st) == 0)
+        fprintf(stderr, "\n%u packets received, %u dropped by kernel\n",
+                st.ps_recv, st.ps_drop);
+
+    pcap_close(handle);
+    return rc == -1 ? 1 : 0;
+}
