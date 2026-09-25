@@ -5,6 +5,30 @@ A minimal, libpcap-based tcpdump alternative for Linux and macOS.
 It prints one line per packet in fixed-width columns, with no name resolution
 (all addresses and ports are shown as numbers).
 
+## What it's for
+
+netdump is a triage tool for when users complain that "the network doesn't
+work": take a quick look at the live traffic, even at several hundred packets
+per second, and see whether the basics are fine:
+
+- do SYNs get a SYN+ACK, do ARP requests get a reply?
+- do DHCP requests get an OFFER/ACK (or are addresses exhausted, or does DHCP
+  snooping on a switch drop them)?
+- do DNS queries get answered, and without errors?
+- are there suspiciously many ICMP port-unreachables, TCP resets or other
+  unusual traffic?
+
+So the output is strictly one line per packet, in aligned columns, showing
+only what matters for spotting network faults: VLAN, MAC and IP addresses,
+protocol, ports, and a short, greppable summary (`SYN`, `RST`, `NXDOMAIN`,
+`DISCOVER`, `port-unr`, ...). The summary printed on exit then shows whether
+requests got answers, without reading every line.
+
+Why not tcpdump? Its one-line output doesn't show MAC addresses, the VLAN tag
+gets lost in the details, and DHCP is only decoded with `-v -e`, spread over
+half a page. For full protocol dissection, use Wireshark; netdump deliberately
+leaves details out.
+
 ## Building
 
 You need a C compiler and libpcap.
