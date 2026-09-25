@@ -35,6 +35,21 @@
 #define ETHERTYPE_IPV4  0x0800
 #define ETHERTYPE_ARP   0x0806
 #define ETHERTYPE_8021Q 0x8100
+#define ETHERTYPE_IPV6  0x86dd
+
+/* type/length field values up to this are an 802.3 length, not an ethertype */
+#define ETH_MAX_LEN     1500
+
+#define LLC_SAP_STP     0x42
+#define LLC_SAP_SNAP    0xaa
+#define LLC_HDR_LEN     3
+#define SNAP_HDR_LEN    5
+
+#define OUI_ENCAP       0x000000    /* RFC 1042: PID is an ethertype */
+#define OUI_BRIDGE_TUN  0x0000f8    /* 802.1H: PID is an ethertype */
+#define OUI_CISCO       0x00000c
+#define CISCO_PID_CDP   0x2000
+#define CISCO_PID_PVST  0x010b
 
 #define IPPROTO_NUM_ICMP 1
 #define IPPROTO_NUM_TCP  6
@@ -108,6 +123,43 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
         off += VLAN_TAG_LEN;
     }
 
+    if (etype <= ETH_MAX_LEN) {
+        /* IEEE 802.3 frame: length field, followed by an LLC header */
+        const u_char *llc = pkt + off;
+        if (caplen < off + LLC_HDR_LEN) {
+            strcpy(proto, "LLC");
+            goto out;
+        }
+        if (llc[0] == LLC_SAP_STP) {
+            strcpy(proto, "STP");
+            goto out;
+        }
+        if (llc[0] != LLC_SAP_SNAP ||
+            caplen < off + LLC_HDR_LEN + SNAP_HDR_LEN) {
+            snprintf(proto, sizeof proto, "LLC:%02x", llc[0]);
+            goto out;
+        }
+
+        const u_char *snap = llc + LLC_HDR_LEN;
+        uint32_t oui = ((uint32_t)snap[0] << 16) | (snap[1] << 8) | snap[2];
+        uint16_t pid = rd16(snap + 3);
+        off += LLC_HDR_LEN + SNAP_HDR_LEN;
+
+        if (oui == OUI_CISCO && pid == CISCO_PID_CDP) {
+            strcpy(proto, "CDP");
+            goto out;
+        }
+        if (oui == OUI_CISCO && pid == CISCO_PID_PVST) {
+            strcpy(proto, "STP");
+            goto out;
+        }
+        if (oui != OUI_ENCAP && oui != OUI_BRIDGE_TUN) {
+            strcpy(proto, "SNAP");
+            goto out;
+        }
+        etype = pid;    /* decode the encapsulated ethertype below */
+    }
+
     if (etype == ETHERTYPE_IPV4) {
         const u_char *ip = pkt + off;
         if (caplen < off + 20 || (ip[0] >> 4) != 4) {
@@ -144,6 +196,8 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
             fmt_ip(sip, sizeof sip, arp + 14);
             fmt_ip(dip, sizeof dip, arp + 24);
         }
+    } else if (etype == ETHERTYPE_IPV6) {
+        strcpy(proto, "IPv6");
     } else {
         snprintf(proto, sizeof proto, "0x%04x", etype);
     }

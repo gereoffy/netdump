@@ -51,7 +51,8 @@ vlan src-mac           dst-mac           src-ip          dst-ip          proto  
 4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         ICMP
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         47
      11:22:33:44:55:66 ff:ff:ff:ff:ff:ff 192.168.1.1     192.168.1.254   ARP
-     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff                                 0x86dd
+     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff                                 IPv6
+     11:22:33:44:55:66 01:80:c2:00:00:00                                 STP
 ```
 
 | Column    | Content |
@@ -61,9 +62,27 @@ vlan src-mac           dst-mac           src-ip          dst-ip          proto  
 | `dst-mac` | destination MAC address |
 | `src-ip`  | source IPv4 address (sender IP for ARP) |
 | `dst-ip`  | destination IPv4 address (target IP for ARP) |
-| `proto`   | `TCP`, `UDP`, `ICMP`, `ARP`; the protocol number for other IPv4 protocols, the ethertype in hex for non-IP packets |
+| `proto`   | see below |
 | `sport`   | source port (TCP/UDP only) |
 | `dport`   | destination port (TCP/UDP only) |
+
+Values of the `proto` column:
+
+| Value              | Meaning |
+|--------------------|---------|
+| `TCP`, `UDP`, `ICMP` | IPv4 with that protocol |
+| number (e.g. `47`) | IPv4 with another protocol (IP protocol number) |
+| `ARP`              | ARP |
+| `IPv6`             | IPv6 (not decoded further) |
+| `0x....`           | other ethertype, in hex |
+| `STP`              | Spanning Tree BPDU (802.3/LLC, or Cisco PVST+ over SNAP) |
+| `CDP`              | Cisco Discovery Protocol |
+| `LLC:xx`           | other 802.3/LLC frame, `xx` is the DSAP in hex (e.g. `LLC:e0` = IPX) |
+| `SNAP`             | SNAP frame with a vendor-specific OUI |
+| `LLC`              | truncated 802.3/LLC frame |
+
+802.3 frames carrying IPv4 or ARP in an RFC 1042 SNAP header are decoded the
+same way as Ethernet II frames.
 
 The header line goes to stdout, status messages go to stderr. Output is
 line-buffered, so it shows up immediately in a pipe (`| grep`, `| tee`).
@@ -72,7 +91,7 @@ line-buffered, so it shows up immediately in a pipe (`| grep`, `| tee`).
 
 - Only Ethernet (`DLT_EN10MB`) interfaces are supported; e.g. macOS `lo0` or
   the Linux `any` pseudo-interface won't work.
-- Only IPv4 is decoded. For IPv6 packets only the MAC addresses and the
-  ethertype (`0x86dd`) are shown.
+- Only IPv4 is decoded. For IPv6 packets only the MAC addresses and `IPv6`
+  are shown.
 - Only a single 802.1Q tag is handled, no QinQ.
 - For fragmented IP packets, ports are shown only in the first fragment.
