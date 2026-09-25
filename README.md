@@ -48,7 +48,7 @@ sudo ./netdump en0 arp or icmp
 vlan src-mac           dst-mac           src-ip          dst-ip          proto  sport dport
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 10.0.0.1        192.168.100.200 TCP    51234   443
 100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         8.8.8.8         UDP     5353    53
-4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         ICMP
+4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         ICMP   echo-req
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         47
      11:22:33:44:55:66 ff:ff:ff:ff:ff:ff 192.168.1.1     192.168.1.254   ARP
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff                                 IPv6
@@ -65,6 +65,8 @@ vlan src-mac           dst-mac           src-ip          dst-ip          proto  
 | `proto`   | see below |
 | `sport`   | source port (TCP/UDP only) |
 | `dport`   | destination port (TCP/UDP only) |
+
+For ICMP the two port columns hold the ICMP type instead (see below).
 
 Values of the `proto` column:
 
@@ -83,6 +85,26 @@ Values of the `proto` column:
 
 802.3 frames carrying IPv4 or ARP in an RFC 1042 SNAP header are decoded the
 same way as Ethernet II frames.
+
+ICMP types, shortened to fit the port columns:
+
+| Type/code | Shown as | | Type/code | Shown as |
+|-----------|----------|-|-----------|----------|
+| 0         | `echo-reply`  | | 3/13 | `adm-prohib` |
+| 8         | `echo-req`    | | 3/14 | `prec-viol` |
+| 3/0       | `net-unr`     | | 3/15 | `prec-cutoff` |
+| 3/1       | `host-unr`    | | 4    | `src-quench` |
+| 3/2       | `proto-unr`   | | 5/0–3 | `redir-net`, `redir-host`, `redir-tnet`, `redir-thost` |
+| 3/3       | `port-unr`    | | 9    | `rtr-advert` |
+| 3/4       | `frag-needed` | | 10   | `rtr-solicit` |
+| 3/5       | `srcrt-fail`  | | 11/0 | `ttl-exceed` |
+| 3/6       | `net-unknown` | | 11/1 | `reasm-tmout` |
+| 3/7       | `host-unkn`   | | 12   | `param-prob` |
+| 3/8       | `isolated`    | | 13 / 14 | `tstamp-req` / `tstamp-rep` |
+| 3/9       | `net-prohib`  | | 15 / 16 | `info-req` / `info-reply` |
+| 3/10      | `host-prohib` | | 17 / 18 | `mask-req` / `mask-reply` |
+| 3/11      | `net-tos-unr` | | other | `type/code`, e.g. `42/0` |
+| 3/12      | `hst-tos-unr` | | | |
 
 The header line goes to stdout, status messages go to stderr. Output is
 line-buffered, so it shows up immediately in a pipe (`| grep`, `| tee`).

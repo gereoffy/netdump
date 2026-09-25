@@ -95,6 +95,79 @@ static void print_header(void)
            W_PORT, "sport", W_PORT, "dport");
 }
 
+static const char *icmp_unreach_names[] = {
+    [0]  = "net-unr",
+    [1]  = "host-unr",
+    [2]  = "proto-unr",
+    [3]  = "port-unr",
+    [4]  = "frag-needed",
+    [5]  = "srcrt-fail",
+    [6]  = "net-unknown",
+    [7]  = "host-unkn",
+    [8]  = "isolated",
+    [9]  = "net-prohib",
+    [10] = "host-prohib",
+    [11] = "net-tos-unr",
+    [12] = "hst-tos-unr",
+    [13] = "adm-prohib",
+    [14] = "prec-viol",
+    [15] = "prec-cutoff",
+};
+
+static const char *icmp_redirect_names[] = {
+    [0] = "redir-net",
+    [1] = "redir-host",
+    [2] = "redir-tnet",
+    [3] = "redir-thost",
+};
+
+static const char *icmp_type_names[] = {
+    [0]  = "echo-reply",
+    [4]  = "src-quench",
+    [8]  = "echo-req",
+    [9]  = "rtr-advert",
+    [10] = "rtr-solicit",
+    [12] = "param-prob",
+    [13] = "tstamp-req",
+    [14] = "tstamp-rep",
+    [15] = "info-req",
+    [16] = "info-reply",
+    [17] = "mask-req",
+    [18] = "mask-reply",
+};
+
+#define NELEM(a) (sizeof(a) / sizeof((a)[0]))
+
+/* ICMP type/code as short text (fits the port columns); unknown ones as "type/code" */
+static void fmt_icmp(char *out, size_t n, uint8_t type, uint8_t code)
+{
+    const char *name = NULL;
+
+    switch (type) {
+    case 3:
+        if (code < NELEM(icmp_unreach_names))
+            name = icmp_unreach_names[code];
+        break;
+    case 5:
+        if (code < NELEM(icmp_redirect_names))
+            name = icmp_redirect_names[code];
+        break;
+    case 11:
+        name = code == 0 ? "ttl-exceed" :
+               code == 1 ? "reasm-tmout" : NULL;
+        break;
+    default:
+        if (type < NELEM(icmp_type_names))
+            name = icmp_type_names[type];
+        break;
+    }
+
+    if (name)
+        snprintf(out, n, "%s", name);
+    else
+        snprintf(out, n, "%u/%u", type, code);
+}
+
 static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                           const u_char *pkt)
 {
@@ -103,6 +176,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     char vlan[8] = "", smac[18] = "", dmac[18] = "";
     char sip[16] = "", dip[16] = "", proto[16] = "";
     char sport[8] = "", dport[8] = "";
+    char icmp[32] = "";
 
     size_t caplen = h->caplen;
     if (caplen < ETH_HDR_LEN)
@@ -187,6 +261,11 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
             snprintf(sport, sizeof sport, "%u", rd16(l4));
             snprintf(dport, sizeof dport, "%u", rd16(l4 + 2));
         }
+        if (p == IPPROTO_NUM_ICMP && frag_off == 0 && ihl >= 20 &&
+            caplen >= off + ihl + 2) {
+            const u_char *l4 = ip + ihl;
+            fmt_icmp(icmp, sizeof icmp, l4[0], l4[1]);
+        }
     } else if (etype == ETHERTYPE_ARP) {
         const u_char *arp = pkt + off;
         strcpy(proto, "ARP");
@@ -203,10 +282,14 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     }
 
 out:
-    printf("%-*s %-*s %-*s %-*s %-*s %-*s %*s %*s\n",
+    printf("%-*s %-*s %-*s %-*s %-*s %-*s ",
            W_VLAN, vlan, W_MAC, smac, W_MAC, dmac,
-           W_IP, sip, W_IP, dip, W_PROTO, proto,
-           W_PORT, sport, W_PORT, dport);
+           W_IP, sip, W_IP, dip, W_PROTO, proto);
+    /* ICMP type replaces the two port columns */
+    if (icmp[0])
+        printf("%-*s\n", 2 * W_PORT + 1, icmp);
+    else
+        printf("%*s %*s\n", W_PORT, sport, W_PORT, dport);
 }
 
 /*
