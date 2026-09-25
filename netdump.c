@@ -15,6 +15,8 @@
 #include <pcap.h>
 
 #include <arpa/inet.h>
+#include <errno.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -74,12 +76,16 @@
 static pcap_t *handle;
 static int verbose;     /* -v: extra details (DNS answers, UDP length, ...) */
 
+static volatile sig_atomic_t stop;
+
 static void on_signal(int sig)
 {
     (void)sig;
+    stop = 1;
     if (handle)
         pcap_breakloop(handle);
 }
+
 
 static uint16_t rd16(const u_char *p)
 {
@@ -1291,6 +1297,43 @@ out:;
     printf("\n");
 }
 
+#define FLUSH_INTERVAL 5    /* seconds between -w file flushes */
+
+/*
+ * Live capture loop. Instead of pcap_loop(), which may block for minutes
+ * when no packet matches the filter, wait on the capture fd with poll()
+ * (1 s timeout) and read in non-blocking mode, so the -w file can be
+ * flushed every few seconds and rare packets show up in it promptly.
+ * Falls back to pcap_loop() where there's no selectable fd.
+ */
+static int capture_loop(pcap_dumper_t *dumper)
+{
+    char errbuf[PCAP_ERRBUF_SIZE];
+    int fd = pcap_get_selectable_fd(handle);
+    time_t last_flush = time(NULL);
+
+    if (fd < 0 || pcap_setnonblock(handle, 1, errbuf) == -1)
+        return pcap_loop(handle, -1, handle_packet, (u_char *)dumper);
+
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    while (!stop) {
+        if (poll(&pfd, 1, 1000) < 0 && errno != EINTR) {
+            perror("poll");
+            return -1;
+        }
+        int n = pcap_dispatch(handle, -1, handle_packet, (u_char *)dumper);
+        if (n == -1)
+            return -1;
+        if (n == -2)            /* pcap_breakloop() */
+            break;
+        if (dumper && time(NULL) - last_flush >= FLUSH_INTERVAL) {
+            pcap_dump_flush(dumper);
+            last_flush = time(NULL);
+        }
+    }
+    return 0;
+}
+
 /*
  * Tell whether an interface is Ethernet without opening it (which would
  * need root), by asking the OS for its hardware type.
@@ -1530,9 +1573,12 @@ int main(int argc, char **argv)
     st_offline = offline;
     gettimeofday(&st_run_start, NULL);
 
-    rc = pcap_loop(handle, -1, handle_packet, (u_char *)dumper);
+    if (offline)
+        rc = pcap_loop(handle, -1, handle_packet, (u_char *)dumper);
+    else
+        rc = capture_loop(dumper);
     if (rc == -1)
-        fprintf(stderr, "pcap_loop: %s\n", pcap_geterr(handle));
+        fprintf(stderr, "capture: %s\n", pcap_geterr(handle));
 
     gettimeofday(&st_run_stop, NULL);
     print_stats();

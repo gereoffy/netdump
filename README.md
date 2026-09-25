@@ -57,8 +57,10 @@ netdump [-v] [-w out.pcap] -r <file.pcap> [bpf filter...]
   Wireshark) instead of capturing; `-r -` reads from stdin. No root needed.
 - `-w file.pcap` also saves the packets (those passing the filter) to a pcap
   file, while the screen output and the summary continue as usual (unlike
-  tcpdump, which goes silent with `-w`). Read it back later with `-r`, or open
-  it with tcpdump or Wireshark. Combined with `-r` it cuts a filtered part out
+  tcpdump, which goes silent with `-w`). The file is flushed every 5 seconds,
+  so even rare packets show up in it quickly while the capture is still
+  running, without the cost of writing every packet separately. Read it back
+  later with `-r`, or open it with tcpdump or Wireshark. Combined with `-r` it cuts a filtered part out
   of a bigger capture.
 - `-s len` sets the capture length in bytes (default 1600, enough for all the
   decoding; `0` = whole packets, useful with `-w` for later analysis in
