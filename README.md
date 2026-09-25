@@ -308,7 +308,8 @@ summary to stderr, so after a few minutes of traffic you can see at a glance
 whether requests get answers:
 
 ```
---- 12345 packets (kernel: 12400 received, 0 dropped)
+--- 12345 packets, 2026-09-25 10:00:01 - 10:05:01 (300.0 s), 41 pkt/s (kernel: 12345 received, 0 dropped)
+bytes:     IP 9.1 MB (0.2 Mbit/s)  TCP 3.2 MB (35%)  QUIC 5.5 MB (60%)
 protocols: TCP 10000  IPv6 500  UDP 300  DNS 150  ARP 80  STP 60  ICMP 40  DHCP 8
 TCP:       SYN 120  SYN+ACK 118  FIN 90  RST 5
 ARP:       request 50  reply 25  announce 3
@@ -319,6 +320,13 @@ RADIUS:    Request 30  Accept 12  Reject 2  Challenge 16
 QUIC:      client-Initial 40  server-Initial 38  Handshake 30
 ICMP:      echo-req 10  echo-reply 10  port-unr 12
 ```
+
+The first line shows the measurement period (wall clock from start to Ctrl-C
+when capturing live, first to last packet timestamp with `-r`) and the packet
+rate. The `bytes` line adds up the IP packet sizes taken from the IP headers
+(IPv4 and IPv6), so it's correct even though packets are captured truncated;
+TCP and QUIC are IP-level sizes too, so the percentages are their share of
+all IP traffic. Sizes are 1000-based (1 MB = 1,000,000 bytes).
 
 A group appears only if it had any traffic. Request/answer counters (SYN and
 SYN+ACK, ARP request and reply, DISCOVER/OFFER/REQUEST/ACK, DNS query and

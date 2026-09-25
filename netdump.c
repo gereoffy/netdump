@@ -21,6 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
 
 #ifdef __APPLE__
 #include <ifaddrs.h>
@@ -691,6 +693,11 @@ struct group {
 };
 
 static unsigned long st_total;
+/* IP-level bytes (from the IP headers, so snaplen doesn't matter) */
+static unsigned long long st_bytes_ip, st_bytes_tcp, st_bytes_quic;
+/* measurement period: wall clock when live, packet timestamps with -r */
+static int st_offline;
+static struct timeval st_run_start, st_run_stop, st_first_ts, st_last_ts;
 static struct group st_proto = { "protocols", 0, 0, {{"", 0}} };
 static struct group st_tcp = { "TCP", 4, 4,
     { {"SYN", 0}, {"SYN+ACK", 0}, {"FIN", 0}, {"RST", 0} } };
@@ -756,15 +763,60 @@ static void print_group(struct group *g, int sort)
     fprintf(stderr, "\n");
 }
 
+static double tv_diff(struct timeval a, struct timeval b)
+{
+    return (a.tv_sec - b.tv_sec) + (a.tv_usec - b.tv_usec) / 1e6;
+}
+
+/* 1000-based, e.g. 1.8 GB */
+static void fmt_bytes(char *out, size_t n, double b)
+{
+    static const char *unit[] = { "B", "KB", "MB", "GB", "TB", "PB" };
+    size_t u = 0;
+    while (b >= 1000 && u < NELEM(unit) - 1) {
+        b /= 1000;
+        u++;
+    }
+    snprintf(out, n, u ? "%.1f %s" : "%.0f %s", b, unit[u]);
+}
+
 static void print_stats(void)
 {
     struct pcap_stat ps;
+    struct timeval t0 = st_offline ? st_first_ts : st_run_start;
+    struct timeval t1 = st_offline ? st_last_ts : st_run_stop;
+    double secs = tv_diff(t1, t0);
 
     fprintf(stderr, "\n--- %lu packets", st_total);
+    if (t0.tv_sec && (st_total || !st_offline)) {
+        char a[32], b[32];
+        time_t s0 = t0.tv_sec, s1 = t1.tv_sec;
+        struct tm tm0, tm1;
+        localtime_r(&s0, &tm0);
+        localtime_r(&s1, &tm1);
+        strftime(a, sizeof a, "%Y-%m-%d %H:%M:%S", &tm0);
+        strftime(b, sizeof b, tm0.tm_yday == tm1.tm_yday && tm0.tm_year == tm1.tm_year
+                 ? "%H:%M:%S" : "%Y-%m-%d %H:%M:%S", &tm1);
+        fprintf(stderr, ", %s - %s (%.1f s)", a, b, secs);
+        if (secs > 0)
+            fprintf(stderr, ", %.0f pkt/s", st_total / secs);
+    }
     if (pcap_stats(handle, &ps) == 0)
         fprintf(stderr, " (kernel: %u received, %u dropped)",
                 ps.ps_recv, ps.ps_drop);
     fprintf(stderr, "\n");
+    if (st_bytes_ip) {
+        char ip[16], tcp[16], quic[16];
+        fmt_bytes(ip, sizeof ip, st_bytes_ip);
+        fmt_bytes(tcp, sizeof tcp, st_bytes_tcp);
+        fmt_bytes(quic, sizeof quic, st_bytes_quic);
+        fprintf(stderr, "%-11s" "IP %s", "bytes:", ip);
+        if (secs > 0)
+            fprintf(stderr, " (%.1f Mbit/s)", st_bytes_ip * 8 / secs / 1e6);
+        fprintf(stderr, "  TCP %s (%.0f%%)  QUIC %s (%.0f%%)\n",
+                tcp, 100.0 * st_bytes_tcp / st_bytes_ip,
+                quic, 100.0 * st_bytes_quic / st_bytes_ip);
+    }
     print_group(&st_proto, 1);
     print_group(&st_tcp, 0);
     print_group(&st_arp, 0);
@@ -783,6 +835,7 @@ struct pkt {
     char sport[8], dport[8], info[320], addr6[96];
     char type[32];      /* ICMP/ARP type, shown in place of the ports */
     int v6, tcp_flags, dns_resp, mdns_resp;
+    unsigned long iplen;    /* IP packet length from the IP header */
     unsigned dns_rcode;
 };
 
@@ -992,6 +1045,7 @@ static void decode_ipv6(struct pkt *pk, const u_char *ip6, size_t caplen)
         return;
     }
     pk->v6 = 1;
+    pk->iplen = rd16(ip6 + 4) + IP6_HDR_LEN;
     strcpy(pk->proto, "IPv6");      /* until a known transport is found */
     fmt_ip6_short(pk->sip, sizeof pk->sip, ip6 + 8);
     fmt_ip6_short(pk->dip, sizeof pk->dip, ip6 + 24);
@@ -1039,9 +1093,18 @@ static void decode_ipv6(struct pkt *pk, const u_char *ip6, size_t caplen)
     }
 }
 
-static void count_stats(const struct pkt *pk, const char *label)
+static void count_stats(const struct pkt *pk, const char *label,
+                        struct timeval ts)
 {
+    if (!st_total)
+        st_first_ts = ts;
+    st_last_ts = ts;
     st_total++;
+    st_bytes_ip += pk->iplen;
+    if (!strcmp(pk->proto, "TCP"))
+        st_bytes_tcp += pk->iplen;
+    else if (!strcmp(pk->proto, "QUIC"))
+        st_bytes_quic += pk->iplen;
     count(&st_proto, label[0] ? label : "truncated");
     if (pk->tcp_flags >= 0) {
         if ((pk->tcp_flags & TCP_SYN) && (pk->tcp_flags & TCP_ACK))
@@ -1158,6 +1221,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
         uint8_t p = ip[9];
         int frag_off = rd16(ip + 6) & 0x1fff;
 
+        pk.iplen = rd16(ip + 2);
         fmt_ip(pk.sip, sizeof pk.sip, ip + 12);
         fmt_ip(pk.dip, sizeof pk.dip, ip + 16);
         fmt_ip_proto(pk.proto, sizeof pk.proto, p);
@@ -1206,7 +1270,7 @@ out:;
     char label[sizeof pk.proto + 1];
     snprintf(label, sizeof label, "%s%s", pk.proto,
              pk.v6 && strcmp(pk.proto, "IPv6") ? "6" : "");
-    count_stats(&pk, label);
+    count_stats(&pk, label, h->ts);
 
     printf("%-*s %-*s %-*s  %-*s %-*s %-*s ",
            W_VLAN, pk.vlan, W_MAC, pk.smac, W_MAC, pk.dmac,
@@ -1431,11 +1495,14 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IOLBF, 0);
     fprintf(stderr, "%s %s\n", offline ? "reading from" : "listening on", dev);
     print_header();
+    st_offline = offline;
+    gettimeofday(&st_run_start, NULL);
 
     rc = pcap_loop(handle, -1, handle_packet, NULL);
     if (rc == -1)
         fprintf(stderr, "pcap_loop: %s\n", pcap_geterr(handle));
 
+    gettimeofday(&st_run_stop, NULL);
     print_stats();
 
     pcap_close(handle);
