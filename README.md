@@ -110,7 +110,8 @@ Values of the `proto` column:
 | `DNS`              | DNS (UDP port 53), see below |
 | `mDNS`             | multicast DNS / Bonjour / Avahi (UDP port 5353), see below |
 | `QUIC`             | QUIC / HTTP/3 (UDP port 443), see below |
-| `IPv6`             | IPv6 (not decoded further) |
+| `TCP6`, `UDP6`, `ICMP6`, `DNS6`, ... | the same over IPv6, see below |
+| `IPv6`             | IPv6 with another next header (shown as `next=N`) |
 | `0x....`           | other ethertype, in hex |
 | `STP`              | Spanning Tree BPDU (802.3/LLC, or Cisco PVST+ over SNAP) |
 | `CDP`              | Cisco Discovery Protocol |
@@ -196,6 +197,38 @@ out like SYNs without SYN+ACK. `Handshake` is usually lower: servers often
 send Initial and Handshake in one UDP datagram (only the first is seen), and
 resumed connections (`0-RTT`) need less handshaking.
 
+## IPv6
+
+IPv6 packets are decoded the same way as IPv4 (TCP, UDP, DNS, mDNS, QUIC,
+...), with a `6` appended to the protocol name (`TCP6`, `DNS6`, `ICMP6`).
+IPv6 addresses (up to 39 characters) don't fit the IP columns, so those stay
+empty and the addresses are shown at the end of the line as `[src > dst]`.
+
+For ICMPv6, the type is shown in place of the ports, like for ICMP. The most
+interesting ones are Neighbor Discovery, IPv6's replacement for ARP: `NS`
+(neighbor solicitation, "who has", with the target address; from `::` it's a
+duplicate address check) and `NA` (the answer), and `RS` / `RA` (router
+solicitation and advertisement; an unexpected RA source is a classic IPv6
+problem). Errors show the original packet like ICMP does, plus the MTU for
+`pkt-too-big`:
+
+```
+... ICMP6  NS          fe80::1 [fe80::5054:ff:fe12:34ab > fe80::1]
+... ICMP6  NA          fe80::1 [fe80::1 > fe80::5054:ff:fe12:34ab]
+... ICMP6  RA          [fe80::1 > ff02::1]
+... ICMP6  pkt-too-big TCP [2001:db8:10::53]:443 mtu=1280 [2001:db8::1 > 2001:db8:10::25]
+... DNS6   40000    53 AAAA ipv6.example.com [2001:db8:10::25 > 2001:db8:10::53]
+```
+
+Other ICMPv6 types: `echo-req`, `echo-reply`, `net-unr`, `adm-prohib`,
+`scope-unr`, `host-unr`, `port-unr`, `policy-fail`, `rej-route`,
+`ttl-exceed`, `reasm-tmout`, `param-prob`, `redirect` (with `gw=`),
+`mld-query`, `mld-report`, `mld-done`, `mld2-report`; unknown ones as
+`type/code`.
+
+In the summary, TCP, DNS, mDNS and QUIC counters include IPv6; ICMPv6 has
+its own `ICMP6` line (NS and NA always shown).
+
 For ARP, the info is the kind of message:
 
 | Info       | Meaning |
@@ -269,7 +302,7 @@ line-buffered, so it shows up immediately in a pipe (`| grep`, `| tee`).
 
 - Only Ethernet (`DLT_EN10MB`) interfaces are supported; e.g. macOS `lo0` or
   the Linux `any` pseudo-interface won't work.
-- Only IPv4 is decoded. For IPv6 packets only the MAC addresses and `IPv6`
-  are shown.
+- IPv6 addresses don't fit the IP columns; they're shown at the end of the
+  line instead.
 - Only a single 802.1Q tag is handled, no QinQ.
 - For fragmented IP packets, ports are shown only in the first fragment.

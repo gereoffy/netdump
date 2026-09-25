@@ -8,8 +8,8 @@
  *   vlan src-mac dst-mac src-ip dst-ip proto sport dport [info]
  *
  * No name resolution: addresses and ports are always numeric.
- * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP, DHCP, DNS, mDNS,
- * QUIC).
+ * Supports Linux and macOS, Ethernet interfaces, IPv4/IPv6
+ * (+ARP, ICMPv6, DHCP, DNS, mDNS, QUIC).
  */
 
 #include <pcap.h>
@@ -653,6 +653,7 @@ static struct group st_quic = { "QUIC", 3, 3,
     { {"client-Initial", 0}, {"server-Initial", 0}, {"Handshake", 0} } };
 static struct group st_icmp = { "ICMP", 2, 2,
     { {"echo-req", 0}, {"echo-reply", 0} } };
+static struct group st_icmp6 = { "ICMP6", 2, 2, { {"NS", 0}, {"NA", 0} } };
 
 /* count one occurrence of name (up to the first space) in g */
 static void count(struct group *g, const char *name)
@@ -720,6 +721,252 @@ static void print_stats(void)
     print_group(&st_mdns, 0);
     print_group(&st_quic, 0);
     print_group(&st_icmp, 0);
+    print_group(&st_icmp6, 0);
+}
+
+/* per-packet output fields and values for the statistics */
+struct pkt {
+    char vlan[8], smac[18], dmac[18], sip[16], dip[16], proto[16];
+    char sport[8], dport[8], icmp[32], info[320], addr6[96];
+    int v6, tcp_flags, dns_resp, mdns_resp;
+    unsigned dns_rcode;
+};
+
+/*
+ * TCP/UDP, shared by IPv4 and IPv6. l4 points to the transport header,
+ * caplen is the number of captured bytes from there, l4len the transport
+ * length according to the IP header.
+ */
+static void decode_tcp_udp(struct pkt *pk, uint8_t p, const u_char *l4,
+                           size_t caplen, long l4len)
+{
+    if (caplen < 4)
+        return;
+    snprintf(pk->sport, sizeof pk->sport, "%u", rd16(l4));
+    snprintf(pk->dport, sizeof pk->dport, "%u", rd16(l4 + 2));
+
+    if (p == IPPROTO_NUM_TCP) {
+        if (caplen >= 14) {
+            long datalen = l4len - (l4[12] >> 4) * 4;
+            fmt_tcp_info(pk->info, sizeof pk->info, l4[13], datalen);
+            pk->tcp_flags = l4[13];
+        }
+        return;
+    }
+
+    /* UDP length field covers the 8-byte header plus payload;
+     * mostly noise, so only with -v */
+    if (verbose && caplen >= 6 && rd16(l4 + 4) > 8)
+        snprintf(pk->info, sizeof pk->info, "(%u)", rd16(l4 + 4) - 8);
+    if (caplen < 8)
+        return;
+
+    uint16_t sp = rd16(l4), dp = rd16(l4 + 2);
+    size_t avail = caplen - 8;
+    size_t ulen = rd16(l4 + 4) > 8 ? rd16(l4 + 4) - 8u : 0;
+    if (ulen < avail)
+        avail = ulen;
+
+    /* decoders may leave partial output when they give up */
+    char tmp[sizeof pk->info];
+    if ((sp == DHCP_SERVER_PORT || sp == DHCP_CLIENT_PORT) &&
+        (dp == DHCP_SERVER_PORT || dp == DHCP_CLIENT_PORT) &&
+        fmt_dhcp(tmp, sizeof tmp, l4 + 8, avail)) {
+        strcpy(pk->proto, "DHCP");
+        strcpy(pk->info, tmp);
+    } else if ((sp == DNS_PORT || dp == DNS_PORT) &&
+               fmt_dns(tmp, sizeof tmp, l4 + 8, avail,
+                       &pk->dns_resp, &pk->dns_rcode)) {
+        strcpy(pk->proto, "DNS");
+        strcpy(pk->info, tmp);
+    } else if ((sp == MDNS_PORT || dp == MDNS_PORT) &&
+               fmt_mdns(tmp, sizeof tmp, l4 + 8, avail, &pk->mdns_resp)) {
+        strcpy(pk->proto, "mDNS");
+        strcpy(pk->info, tmp);
+    } else if (sp == QUIC_PORT || dp == QUIC_PORT) {
+        tmp[0] = '\0';
+        if (fmt_quic(tmp, sizeof tmp, l4 + 8, avail)) {
+            strcpy(pk->proto, "QUIC");
+            if (tmp[0])
+                strcpy(pk->info, tmp);
+            else if (ulen)  /* data: size shown even without -v */
+                snprintf(pk->info, sizeof pk->info, "(%zu)", ulen);
+        }
+    }
+}
+
+static void fmt_ip6(char *out, size_t n, const u_char *p)
+{
+    if (!inet_ntop(AF_INET6, p, out, n))
+        snprintf(out, n, "?");
+}
+
+#define IPPROTO_NUM_ICMP6    58
+#define IP6_HDR_LEN          40
+#define IP6_NH_HOPOPTS       0
+#define IP6_NH_ROUTING       43
+#define IP6_NH_FRAGMENT      44
+#define IP6_NH_DSTOPTS       60
+
+/* ICMPv6 type/code as short text, same style (and max 11 chars) as ICMP */
+static void fmt_icmp6(char *out, size_t n, uint8_t type, uint8_t code)
+{
+    static const char *unreach[] = {
+        "net-unr", "adm-prohib", "scope-unr", "host-unr", "port-unr",
+        "policy-fail", "rej-route",
+    };
+    const char *name = NULL;
+
+    switch (type) {
+    case 1:   name = code < NELEM(unreach) ? unreach[code] : NULL; break;
+    case 2:   name = "pkt-too-big"; break;
+    case 3:   name = code == 0 ? "ttl-exceed" : code == 1 ? "reasm-tmout" : NULL;
+              break;
+    case 4:   name = "param-prob"; break;
+    case 128: name = "echo-req"; break;
+    case 129: name = "echo-reply"; break;
+    case 130: name = "mld-query"; break;
+    case 131: name = "mld-report"; break;
+    case 132: name = "mld-done"; break;
+    case 133: name = "RS"; break;
+    case 134: name = "RA"; break;
+    case 135: name = "NS"; break;
+    case 136: name = "NA"; break;
+    case 137: name = "redirect"; break;
+    case 143: name = "mld2-report"; break;
+    }
+    if (name)
+        snprintf(out, n, "%s", name);
+    else
+        snprintf(out, n, "%u/%u", type, code);
+}
+
+/*
+ * ICMPv6 details: the target address for neighbor solicitation and
+ * advertisement; for errors the quoted packet's protocol and destination
+ * ([ip]:port), plus the MTU for pkt-too-big; the new gateway for redirects.
+ */
+static void fmt_icmp6_info(char *out, size_t n, const u_char *icmp, size_t len)
+{
+    uint8_t type = icmp[0];
+    char addr[INET6_ADDRSTRLEN], pname[8];
+
+    out[0] = '\0';
+    if ((type == 135 || type == 136) && len >= 24) {
+        fmt_ip6(addr, sizeof addr, icmp + 8);
+        snprintf(out, n, "%s", addr);
+    } else if (type == 137 && len >= 24) {
+        fmt_ip6(addr, sizeof addr, icmp + 8);
+        snprintf(out, n, "gw=%s", addr);
+    } else if (type >= 1 && type <= 4 && len >= 8 + IP6_HDR_LEN) {
+        const u_char *in = icmp + 8;
+        if ((in[0] >> 4) != 6)
+            return;
+        fmt_ip_proto(pname, sizeof pname, in[6]);
+        fmt_ip6(addr, sizeof addr, in + 24);
+        if ((in[6] == IPPROTO_NUM_TCP || in[6] == IPPROTO_NUM_UDP) &&
+            len >= 8 + IP6_HDR_LEN + 4)
+            append(out, n, "%s [%s]:%u", pname, addr,
+                   rd16(in + IP6_HDR_LEN + 2));
+        else
+            append(out, n, "%s %s", pname, addr);
+        if (type == 2)
+            append(out, n, " mtu=%u", (unsigned)(((uint32_t)icmp[4] << 24) |
+                   (icmp[5] << 16) | (icmp[6] << 8) | icmp[7]));
+    }
+}
+
+static void decode_ipv6(struct pkt *pk, const u_char *ip6, size_t caplen)
+{
+    char src[INET6_ADDRSTRLEN], dst[INET6_ADDRSTRLEN];
+
+    if (caplen < IP6_HDR_LEN || (ip6[0] >> 4) != 6) {
+        strcpy(pk->proto, "IPv6");
+        return;
+    }
+    pk->v6 = 1;
+    strcpy(pk->proto, "IPv6");      /* until a known transport is found */
+    fmt_ip6(src, sizeof src, ip6 + 8);
+    fmt_ip6(dst, sizeof dst, ip6 + 24);
+    snprintf(pk->addr6, sizeof pk->addr6, "[%s > %s]", src, dst);
+
+    /* walk the extension headers that may precede the transport header */
+    uint8_t nh = ip6[6];
+    size_t pos = IP6_HDR_LEN;
+    int first_frag = 1;
+    for (int i = 0; i < 8; i++) {
+        if (nh == IP6_NH_HOPOPTS || nh == IP6_NH_ROUTING ||
+            nh == IP6_NH_DSTOPTS) {
+            if (caplen < pos + 2)
+                return;
+            nh = ip6[pos];
+            pos += (ip6[pos + 1] + 1) * 8;
+        } else if (nh == IP6_NH_FRAGMENT) {
+            if (caplen < pos + 8)
+                return;
+            first_frag = (rd16(ip6 + pos + 2) & 0xfff8) == 0;
+            nh = ip6[pos];
+            pos += 8;
+        } else {
+            break;
+        }
+    }
+    long l4len = (long)rd16(ip6 + 4) - (long)(pos - IP6_HDR_LEN);
+
+    if (nh == IPPROTO_NUM_ICMP6) {
+        strcpy(pk->proto, "ICMP");
+        if (first_frag && caplen >= pos + 2) {
+            fmt_icmp6(pk->icmp, sizeof pk->icmp, ip6[pos], ip6[pos + 1]);
+            fmt_icmp6_info(pk->info, sizeof pk->info, ip6 + pos, caplen - pos);
+        }
+    } else if (nh == IPPROTO_NUM_TCP || nh == IPPROTO_NUM_UDP) {
+        fmt_ip_proto(pk->proto, sizeof pk->proto, nh);
+        if (first_frag && caplen > pos)
+            decode_tcp_udp(pk, nh, ip6 + pos, caplen - pos, l4len);
+    } else {
+        snprintf(pk->info, sizeof pk->info, "next=%u", nh);
+    }
+}
+
+static void count_stats(const struct pkt *pk, const char *label)
+{
+    st_total++;
+    count(&st_proto, label[0] ? label : "truncated");
+    if (pk->tcp_flags >= 0) {
+        if ((pk->tcp_flags & TCP_SYN) && (pk->tcp_flags & TCP_ACK))
+            count(&st_tcp, "SYN+ACK");
+        else if (pk->tcp_flags & TCP_SYN)
+            count(&st_tcp, "SYN");
+        if (pk->tcp_flags & TCP_FIN)
+            count(&st_tcp, "FIN");
+        if (pk->tcp_flags & TCP_RST)
+            count(&st_tcp, "RST");
+    }
+    if (!strcmp(pk->proto, "ARP") && pk->info[0])
+        count(&st_arp, pk->info);
+    if (!strcmp(pk->proto, "DHCP"))
+        count(&st_dhcp, pk->info);
+    if (!strcmp(pk->proto, "DNS")) {
+        count(&st_dns, pk->dns_resp ? "response" : "query");
+        if (pk->dns_resp && pk->dns_rcode) {
+            if (pk->dns_rcode < NELEM(dns_rcode_names))
+                count(&st_dns, dns_rcode_names[pk->dns_rcode]);
+            else
+                count(&st_dns, "RCODE?");
+        }
+    }
+    if (!strcmp(pk->proto, "mDNS"))
+        count(&st_mdns, pk->mdns_resp ? "response" : "query");
+    if (!strcmp(pk->proto, "QUIC") && pk->info[0] && pk->info[0] != '(') {
+        /* client -> server:443 Initial vs. the server's answer */
+        if (!strcmp(pk->info, "Initial"))
+            count(&st_quic, strcmp(pk->dport, "443") ? "server-Initial"
+                                                     : "client-Initial");
+        else
+            count(&st_quic, pk->info);
+    }
+    if (pk->icmp[0])
+        count(pk->v6 ? &st_icmp6 : &st_icmp, pk->icmp);
 }
 
 static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
@@ -727,19 +974,17 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
 {
     (void)user;
 
-    char vlan[8] = "", smac[18] = "", dmac[18] = "";
-    char sip[16] = "", dip[16] = "", proto[16] = "";
-    char sport[8] = "", dport[8] = "";
-    char icmp[32] = "", info[320] = "";
-    int tcp_flags = -1, dns_resp = -1, mdns_resp = 0;
-    unsigned dns_rcode = 0;
+    struct pkt pk;
+    memset(&pk, 0, sizeof pk);
+    pk.tcp_flags = -1;
+    pk.dns_resp = -1;
 
     size_t caplen = h->caplen;
     if (caplen < ETH_HDR_LEN)
         return;
 
-    fmt_mac(dmac, sizeof dmac, pkt);
-    fmt_mac(smac, sizeof smac, pkt + 6);
+    fmt_mac(pk.dmac, sizeof pk.dmac, pkt);
+    fmt_mac(pk.smac, sizeof pk.smac, pkt + 6);
 
     size_t off = 12;
     uint16_t etype = rd16(pkt + off);
@@ -748,7 +993,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     if (etype == ETHERTYPE_8021Q) {
         if (caplen < off + VLAN_TAG_LEN)
             goto out;
-        snprintf(vlan, sizeof vlan, "%u", rd16(pkt + off) & 0x0fff);
+        snprintf(pk.vlan, sizeof pk.vlan, "%u", rd16(pkt + off) & 0x0fff);
         etype = rd16(pkt + off + 2);
         off += VLAN_TAG_LEN;
     }
@@ -757,16 +1002,16 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
         /* IEEE 802.3 frame: length field, followed by an LLC header */
         const u_char *llc = pkt + off;
         if (caplen < off + LLC_HDR_LEN) {
-            strcpy(proto, "LLC");
+            strcpy(pk.proto, "LLC");
             goto out;
         }
         if (llc[0] == LLC_SAP_STP) {
-            strcpy(proto, "STP");
+            strcpy(pk.proto, "STP");
             goto out;
         }
         if (llc[0] != LLC_SAP_SNAP ||
             caplen < off + LLC_HDR_LEN + SNAP_HDR_LEN) {
-            snprintf(proto, sizeof proto, "LLC:%02x", llc[0]);
+            snprintf(pk.proto, sizeof pk.proto, "LLC:%02x", llc[0]);
             goto out;
         }
 
@@ -776,15 +1021,15 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
         off += LLC_HDR_LEN + SNAP_HDR_LEN;
 
         if (oui == OUI_CISCO && pid == CISCO_PID_CDP) {
-            strcpy(proto, "CDP");
+            strcpy(pk.proto, "CDP");
             goto out;
         }
         if (oui == OUI_CISCO && pid == CISCO_PID_PVST) {
-            strcpy(proto, "STP");
+            strcpy(pk.proto, "STP");
             goto out;
         }
         if (oui != OUI_ENCAP && oui != OUI_BRIDGE_TUN) {
-            strcpy(proto, "SNAP");
+            strcpy(pk.proto, "SNAP");
             goto out;
         }
         etype = pid;    /* decode the encapsulated ethertype below */
@@ -793,154 +1038,77 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     if (etype == ETHERTYPE_IPV4) {
         const u_char *ip = pkt + off;
         if (caplen < off + 20 || (ip[0] >> 4) != 4) {
-            snprintf(proto, sizeof proto, "0x%04x", etype);
+            snprintf(pk.proto, sizeof pk.proto, "0x%04x", etype);
             goto out;
         }
         size_t ihl = (size_t)(ip[0] & 0x0f) * 4;
         uint8_t p = ip[9];
         int frag_off = rd16(ip + 6) & 0x1fff;
 
-        fmt_ip(sip, sizeof sip, ip + 12);
-        fmt_ip(dip, sizeof dip, ip + 16);
+        fmt_ip(pk.sip, sizeof pk.sip, ip + 12);
+        fmt_ip(pk.dip, sizeof pk.dip, ip + 16);
+        fmt_ip_proto(pk.proto, sizeof pk.proto, p);
 
-        fmt_ip_proto(proto, sizeof proto, p);
-
-        /* ports only in the first fragment */
-        if ((p == IPPROTO_NUM_TCP || p == IPPROTO_NUM_UDP) &&
-            frag_off == 0 && ihl >= 20 && caplen >= off + ihl + 4) {
+        /* transport details only in the first fragment */
+        if (frag_off == 0 && ihl >= 20 && caplen > off + ihl) {
             const u_char *l4 = ip + ihl;
-            snprintf(sport, sizeof sport, "%u", rd16(l4));
-            snprintf(dport, sizeof dport, "%u", rd16(l4 + 2));
-            if (p == IPPROTO_NUM_TCP && caplen >= off + ihl + 14) {
-                long doff = (l4[12] >> 4) * 4;
-                long datalen = (long)rd16(ip + 2) - (long)ihl - doff;
-                fmt_tcp_info(info, sizeof info, l4[13], datalen);
-                tcp_flags = l4[13];
+            size_t l4cap = caplen - (off + ihl);
+            if (p == IPPROTO_NUM_TCP || p == IPPROTO_NUM_UDP)
+                decode_tcp_udp(&pk, p, l4, l4cap,
+                               (long)rd16(ip + 2) - (long)ihl);
+            if (p == IPPROTO_NUM_ICMP && l4cap >= 2) {
+                fmt_icmp(pk.icmp, sizeof pk.icmp, l4[0], l4[1]);
+                fmt_icmp_error(pk.info, sizeof pk.info, l4, l4cap);
             }
-            /* UDP length field covers the 8-byte header plus payload;
-             * mostly noise, so only with -v */
-            if (verbose && p == IPPROTO_NUM_UDP && caplen >= off + ihl + 6 &&
-                rd16(l4 + 4) > 8)
-                snprintf(info, sizeof info, "(%u)", rd16(l4 + 4) - 8);
-
-            if (p == IPPROTO_NUM_UDP && caplen >= off + ihl + 8) {
-                uint16_t sp = rd16(l4), dp = rd16(l4 + 2);
-                size_t avail = caplen - (off + ihl + 8);
-                size_t ulen = rd16(l4 + 4) > 8 ? rd16(l4 + 4) - 8u : 0;
-                if (ulen < avail)
-                    avail = ulen;
-                /* decoders may leave partial output when they give up */
-                char tmp[sizeof info];
-                if ((sp == DHCP_SERVER_PORT || sp == DHCP_CLIENT_PORT) &&
-                    (dp == DHCP_SERVER_PORT || dp == DHCP_CLIENT_PORT) &&
-                    fmt_dhcp(tmp, sizeof tmp, l4 + 8, avail)) {
-                    strcpy(proto, "DHCP");
-                    strcpy(info, tmp);
-                } else if ((sp == DNS_PORT || dp == DNS_PORT) &&
-                           fmt_dns(tmp, sizeof tmp, l4 + 8, avail,
-                                   &dns_resp, &dns_rcode)) {
-                    strcpy(proto, "DNS");
-                    strcpy(info, tmp);
-                } else if ((sp == MDNS_PORT || dp == MDNS_PORT) &&
-                           fmt_mdns(tmp, sizeof tmp, l4 + 8, avail, &mdns_resp)) {
-                    strcpy(proto, "mDNS");
-                    strcpy(info, tmp);
-                } else if (sp == QUIC_PORT || dp == QUIC_PORT) {
-                    tmp[0] = '\0';
-                    if (fmt_quic(tmp, sizeof tmp, l4 + 8, avail)) {
-                        strcpy(proto, "QUIC");
-                        if (tmp[0])
-                            strcpy(info, tmp);
-                        else if (ulen)  /* data: size shown even without -v */
-                            snprintf(info, sizeof info, "(%zu)", ulen);
-                    }
-                }
-            }
-        }
-        if (p == IPPROTO_NUM_ICMP && frag_off == 0 && ihl >= 20 &&
-            caplen >= off + ihl + 2) {
-            const u_char *l4 = ip + ihl;
-            fmt_icmp(icmp, sizeof icmp, l4[0], l4[1]);
-            fmt_icmp_error(info, sizeof info, l4, caplen - (off + ihl));
         }
     } else if (etype == ETHERTYPE_ARP) {
         const u_char *arp = pkt + off;
-        strcpy(proto, "ARP");
+        strcpy(pk.proto, "ARP");
         /* Ethernet/IPv4 ARP: htype 1, ptype 0x0800, hlen 6, plen 4 */
         if (caplen >= off + 28 && rd16(arp) == 1 &&
             rd16(arp + 2) == ETHERTYPE_IPV4 && arp[4] == 6 && arp[5] == 4) {
             const u_char *spa = arp + 14, *tpa = arp + 24;
             uint16_t op = rd16(arp + 6);
-            fmt_ip(sip, sizeof sip, spa);
-            fmt_ip(dip, sizeof dip, tpa);
+            fmt_ip(pk.sip, sizeof pk.sip, spa);
+            fmt_ip(pk.dip, sizeof pk.dip, tpa);
             if (op == ARP_OP_REQUEST && !(spa[0] | spa[1] | spa[2] | spa[3]))
-                strcpy(info, "probe");      /* RFC 5227 address check */
+                strcpy(pk.info, "probe");      /* RFC 5227 address check */
             else if (!memcmp(spa, tpa, 4))
-                strcpy(info, "announce");   /* gratuitous ARP */
+                strcpy(pk.info, "announce");   /* gratuitous ARP */
             else if (op == ARP_OP_REQUEST)
-                strcpy(info, "request");
+                strcpy(pk.info, "request");
             else if (op == ARP_OP_REPLY)
-                strcpy(info, "reply");
+                strcpy(pk.info, "reply");
             else
-                snprintf(info, sizeof info, "op-%u", op);
+                snprintf(pk.info, sizeof pk.info, "op-%u", op);
         }
     } else if (etype == ETHERTYPE_IPV6) {
-        strcpy(proto, "IPv6");
+        decode_ipv6(&pk, pkt + off, caplen - off);
     } else {
-        snprintf(proto, sizeof proto, "0x%04x", etype);
+        snprintf(pk.proto, sizeof pk.proto, "0x%04x", etype);
     }
 
-out:
-    st_total++;
-    count(&st_proto, proto[0] ? proto : "truncated");
-    if (tcp_flags >= 0) {
-        if ((tcp_flags & TCP_SYN) && (tcp_flags & TCP_ACK))
-            count(&st_tcp, "SYN+ACK");
-        else if (tcp_flags & TCP_SYN)
-            count(&st_tcp, "SYN");
-        if (tcp_flags & TCP_FIN)
-            count(&st_tcp, "FIN");
-        if (tcp_flags & TCP_RST)
-            count(&st_tcp, "RST");
-    }
-    if (!strcmp(proto, "ARP") && info[0])
-        count(&st_arp, info);
-    if (!strcmp(proto, "DHCP"))
-        count(&st_dhcp, info);
-    if (!strcmp(proto, "DNS")) {
-        count(&st_dns, dns_resp ? "response" : "query");
-        if (dns_resp && dns_rcode) {
-            if (dns_rcode < NELEM(dns_rcode_names))
-                count(&st_dns, dns_rcode_names[dns_rcode]);
-            else
-                count(&st_dns, "RCODE?");
-        }
-    }
-    if (!strcmp(proto, "mDNS"))
-        count(&st_mdns, mdns_resp ? "response" : "query");
-    if (!strcmp(proto, "QUIC") && info[0] && info[0] != '(') {
-        /* client -> server:443 Initial vs. the server's answer */
-        if (!strcmp(info, "Initial"))
-            count(&st_quic, strcmp(dport, "443") ? "server-Initial"
-                                                 : "client-Initial");
-        else
-            count(&st_quic, info);
-    }
-    if (icmp[0])
-        count(&st_icmp, icmp);
+out:;
+    /* IPv6 variants get a "6" suffix: TCP6, DNS6, ICMP6, ... */
+    char label[sizeof pk.proto + 1];
+    snprintf(label, sizeof label, "%s%s", pk.proto,
+             pk.v6 && strcmp(pk.proto, "IPv6") ? "6" : "");
+    count_stats(&pk, label);
 
     printf("%-*s %-*s %-*s  %-*s %-*s %-*s ",
-           W_VLAN, vlan, W_MAC, smac, W_MAC, dmac,
-           W_IP, sip, W_IP, dip, W_PROTO, proto);
+           W_VLAN, pk.vlan, W_MAC, pk.smac, W_MAC, pk.dmac,
+           W_IP, pk.sip, W_IP, pk.dip, W_PROTO, label);
     /* ICMP type replaces the two port columns */
-    if (icmp[0] && info[0])
-        printf("%-*s %s\n", 2 * W_PORT + 1, icmp, info);
-    else if (icmp[0])
-        printf("%s\n", icmp);
-    else if (info[0])
-        printf("%*s %*s %s\n", W_PORT, sport, W_PORT, dport, info);
+    if (pk.icmp[0])
+        printf(pk.info[0] || pk.addr6[0] ? "%-*s" : "%.*s%s",
+               2 * W_PORT + 1, pk.icmp, "");
     else
-        printf("%*s %*s\n", W_PORT, sport, W_PORT, dport);
+        printf("%*s %*s", W_PORT, pk.sport, W_PORT, pk.dport);
+    if (pk.info[0])
+        printf(" %s", pk.info);
+    if (pk.addr6[0])
+        printf(" %s", pk.addr6);
+    printf("\n");
 }
 
 /*
