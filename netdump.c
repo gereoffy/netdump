@@ -19,6 +19,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __APPLE__
+#include <ifaddrs.h>
+#include <net/if_dl.h>
+#include <net/if_types.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#endif
+
 #define SNAPLEN 256
 
 #define ETH_HDR_LEN   14
@@ -147,6 +155,54 @@ out:
            W_PORT, sport, W_PORT, dport);
 }
 
+/*
+ * Tell whether an interface is Ethernet without opening it (which would
+ * need root), by asking the OS for its hardware type.
+ */
+#if defined(__linux__)
+static int is_ethernet(const char *name)
+{
+    char path[128];
+    int type = -1;
+
+    if (strchr(name, '/'))
+        return 0;
+    snprintf(path, sizeof path, "/sys/class/net/%s/type", name);
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;   /* pseudo devices: any, nflog, dbus-*, ... */
+    if (fscanf(f, "%d", &type) != 1)
+        type = -1;
+    fclose(f);
+    return type == 1;   /* ARPHRD_ETHER */
+}
+#elif defined(__APPLE__)
+static int is_ethernet(const char *name)
+{
+    struct ifaddrs *ifa, *i;
+    int ret = 0;
+
+    if (getifaddrs(&ifa) == -1)
+        return 1;   /* can't tell, don't hide it */
+    for (i = ifa; i; i = i->ifa_next) {
+        if (i->ifa_addr && i->ifa_addr->sa_family == AF_LINK &&
+            !strcmp(i->ifa_name, name)) {
+            uint8_t t = ((struct sockaddr_dl *)i->ifa_addr)->sdl_type;
+            ret = (t == IFT_ETHER || t == IFT_BRIDGE);
+            break;
+        }
+    }
+    freeifaddrs(ifa);
+    return ret;
+}
+#else
+static int is_ethernet(const char *name)
+{
+    (void)name;
+    return 1;
+}
+#endif
+
 static int list_interfaces(void)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
@@ -157,8 +213,10 @@ static int list_interfaces(void)
         return 1;
     }
 
-    fprintf(stderr, "Available interfaces:\n");
+    fprintf(stderr, "Available Ethernet interfaces:\n");
     for (d = devs; d; d = d->next) {
+        if (!is_ethernet(d->name))
+            continue;
         fprintf(stderr, "  %-16s", d->name);
         for (pcap_addr_t *a = d->addresses; a; a = a->next) {
             if (a->addr && a->addr->sa_family == AF_INET) {
