@@ -89,7 +89,7 @@ static void fmt_ip(char *out, size_t n, const u_char *p)
 
 static void print_header(void)
 {
-    printf("%-*s %-*s %-*s %-*s %-*s %-*s %*s %*s\n",
+    printf("%-*s %-*s %-*s  %-*s %-*s %-*s %*s %*s\n",
            W_VLAN, "vlan", W_MAC, "src-mac", W_MAC, "dst-mac",
            W_IP, "src-ip", W_IP, "dst-ip", W_PROTO, "proto",
            W_PORT, "sport", W_PORT, "dport");
@@ -142,7 +142,7 @@ static const char *icmp_type_names[] = {
 #define TCP_ACK 0x10
 
 /*
- * Readable TCP summary: SYN, SYN+ACK, FIN, RESET and the payload length
+ * Readable TCP summary: SYN, SYN+ACK, FIN, RST and the payload length
  * for segments carrying data. A plain ACK prints nothing.
  * TCP has no length field: payload = IP total length - IP hdr - TCP hdr.
  */
@@ -157,7 +157,7 @@ static void fmt_tcp_info(char *out, size_t n, uint8_t f, long datalen)
     if ((f & TCP_FIN) && len < n)
         len += snprintf(out + len, n - len, "%sFIN", len ? " " : "");
     if ((f & TCP_RST) && len < n)
-        len += snprintf(out + len, n - len, "%sRESET", len ? " " : "");
+        len += snprintf(out + len, n - len, "%sRST", len ? " " : "");
     if (datalen > 0 && len < n)
         snprintf(out + len, n - len, "%s(%ld)", len ? " " : "", datalen);
 }
@@ -317,7 +317,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     }
 
 out:
-    printf("%-*s %-*s %-*s %-*s %-*s %-*s ",
+    printf("%-*s %-*s %-*s  %-*s %-*s %-*s ",
            W_VLAN, vlan, W_MAC, smac, W_MAC, dmac,
            W_IP, sip, W_IP, dip, W_PROTO, proto);
     /* ICMP type replaces the two port columns */

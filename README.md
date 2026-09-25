@@ -45,14 +45,14 @@ sudo ./netdump en0 arp or icmp
 ## Output
 
 ```
-vlan src-mac           dst-mac           src-ip          dst-ip          proto  sport dport
-     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 10.0.0.1        192.168.100.200 TCP    51234   443 SYN
-100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         8.8.8.8         UDP     5353    53 (48)
-4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         ICMP   echo-req
-     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         47
-     11:22:33:44:55:66 ff:ff:ff:ff:ff:ff 192.168.1.1     192.168.1.254   ARP
-     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff                                 IPv6
-     11:22:33:44:55:66 01:80:c2:00:00:00                                 STP
+vlan src-mac           dst-mac            src-ip          dst-ip          proto  sport dport
+     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  10.0.0.1        192.168.100.200 TCP    51234   443 SYN
+100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         8.8.8.8         UDP     5353    53 (48)
+4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         5.6.7.8         ICMP   echo-req
+     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         5.6.7.8         47
+     11:22:33:44:55:66 ff:ff:ff:ff:ff:ff  192.168.1.1     192.168.1.254   ARP
+     11:22:33:44:55:66 aa:bb:cc:dd:ee:ff                                  IPv6
+     11:22:33:44:55:66 01:80:c2:00:00:00                                  STP
 ```
 
 | Column    | Content |
@@ -94,7 +94,7 @@ For TCP, the info after the ports is a readable summary of the flags:
 | `SYN`      | new connection attempt |
 | `SYN+ACK`  | answer to a SYN |
 | `FIN`      | connection close |
-| `RESET`    | connection reset (RST) |
+| `RST`      | connection reset |
 | `(N)`      | segment carrying N bytes of payload |
 | (nothing)  | plain ACK |
 
