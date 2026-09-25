@@ -38,6 +38,9 @@
 #define ETHERTYPE_8021Q 0x8100
 #define ETHERTYPE_IPV6  0x86dd
 
+#define ARP_OP_REQUEST  1
+#define ARP_OP_REPLY    2
+
 /* type/length field values up to this are an 802.3 length, not an ethertype */
 #define ETH_MAX_LEN     1500
 
@@ -389,8 +392,20 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
         /* Ethernet/IPv4 ARP: htype 1, ptype 0x0800, hlen 6, plen 4 */
         if (caplen >= off + 28 && rd16(arp) == 1 &&
             rd16(arp + 2) == ETHERTYPE_IPV4 && arp[4] == 6 && arp[5] == 4) {
-            fmt_ip(sip, sizeof sip, arp + 14);
-            fmt_ip(dip, sizeof dip, arp + 24);
+            const u_char *spa = arp + 14, *tpa = arp + 24;
+            uint16_t op = rd16(arp + 6);
+            fmt_ip(sip, sizeof sip, spa);
+            fmt_ip(dip, sizeof dip, tpa);
+            if (op == ARP_OP_REQUEST && !(spa[0] | spa[1] | spa[2] | spa[3]))
+                strcpy(info, "probe");      /* RFC 5227 address check */
+            else if (!memcmp(spa, tpa, 4))
+                strcpy(info, "announce");   /* gratuitous ARP */
+            else if (op == ARP_OP_REQUEST)
+                strcpy(info, "request");
+            else if (op == ARP_OP_REPLY)
+                strcpy(info, "reply");
+            else
+                snprintf(info, sizeof info, "op-%u", op);
         }
     } else if (etype == ETHERTYPE_IPV6) {
         strcpy(proto, "IPv6");

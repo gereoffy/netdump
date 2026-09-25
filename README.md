@@ -54,7 +54,7 @@ vlan src-mac           dst-mac            src-ip          dst-ip          proto 
 100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         8.8.8.8         UDP     5353    53 (48)
 4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         5.6.7.8         ICMP   echo-req
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         5.6.7.8         47
-     11:22:33:44:55:66 ff:ff:ff:ff:ff:ff  192.168.1.1     192.168.1.254   ARP
+     11:22:33:44:55:66 ff:ff:ff:ff:ff:ff  192.168.1.1     192.168.1.254   ARP                request
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff                                  IPv6
      11:22:33:44:55:66 01:80:c2:00:00:00                                  STP
 ```
@@ -118,6 +118,16 @@ for `OFFER` and `ACK`:
 ```
 
 Plain BOOTP packets (without a DHCP message type) are shown as UDP.
+
+For ARP, the info is the kind of message:
+
+| Info       | Meaning |
+|------------|---------|
+| `request`  | who has the target IP? |
+| `reply`    | answer to a request |
+| `announce` | gratuitous ARP: sender announces its own IP (sender IP = target IP) |
+| `probe`    | address conflict check before using an IP (sender IP 0.0.0.0, RFC 5227) |
+| `op-N`     | other opcode (e.g. RARP) |
 
 ICMP types, shortened to fit the port columns:
 
