@@ -601,8 +601,8 @@ static struct group st_arp = { "ARP", 2, 2, { {"request", 0}, {"reply", 0} } };
 static struct group st_dhcp = { "DHCP", 4, 4,
     { {"DISCOVER", 0}, {"OFFER", 0}, {"REQUEST", 0}, {"ACK", 0} } };
 static struct group st_dns = { "DNS", 2, 2, { {"query", 0}, {"response", 0} } };
-static struct group st_quic = { "QUIC", 2, 2,
-    { {"Initial", 0}, {"Handshake", 0} } };
+static struct group st_quic = { "QUIC", 3, 3,
+    { {"client-Initial", 0}, {"server-Initial", 0}, {"Handshake", 0} } };
 static struct group st_icmp = { "ICMP", 2, 2,
     { {"echo-req", 0}, {"echo-reply", 0} } };
 
@@ -863,8 +863,14 @@ out:
                 count(&st_dns, "RCODE?");
         }
     }
-    if (!strcmp(proto, "QUIC") && info[0] && info[0] != '(')
-        count(&st_quic, info);
+    if (!strcmp(proto, "QUIC") && info[0] && info[0] != '(') {
+        /* client -> server:443 Initial vs. the server's answer */
+        if (!strcmp(info, "Initial"))
+            count(&st_quic, strcmp(dport, "443") ? "server-Initial"
+                                                 : "client-Initial");
+        else
+            count(&st_quic, info);
+    }
     if (icmp[0])
         count(&st_icmp, icmp);
 

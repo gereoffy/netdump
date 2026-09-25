@@ -178,6 +178,12 @@ everything, including the length of its own header, so the real payload
 (roughly 25-40 bytes less) can't be known from outside. Other traffic on
 UDP 443 (e.g. DTLS VPNs) stays `UDP`.
 
+In the summary, Initials are split by direction: `client-Initial` (to port
+443) and `server-Initial` (the answer), so unanswered QUIC connections stand
+out like SYNs without SYN+ACK. `Handshake` is usually lower: servers often
+send Initial and Handshake in one UDP datagram (only the first is seen), and
+resumed connections (`0-RTT`) need less handshaking.
+
 For ARP, the info is the kind of message:
 
 | Info       | Meaning |
@@ -233,13 +239,13 @@ TCP:       SYN 120  SYN+ACK 118  FIN 90  RST 5
 ARP:       request 50  reply 25  announce 3
 DHCP:      DISCOVER 2  OFFER 0  REQUEST 0  ACK 0
 DNS:       query 150  response 148  NXDOMAIN 3  SERVFAIL 1
-QUIC:      Initial 40  Handshake 38
+QUIC:      client-Initial 40  server-Initial 38  Handshake 30
 ICMP:      echo-req 10  echo-reply 10  port-unr 12
 ```
 
 A group appears only if it had any traffic. Request/answer counters (SYN and
 SYN+ACK, ARP request and reply, DISCOVER/OFFER/REQUEST/ACK, DNS query and
-response, QUIC Initial and Handshake, echo request and reply) are always shown within a group, because a
+response, QUIC client and server Initial and Handshake, echo request and reply) are always shown within a group, because a
 zero there is the telling part; everything else only when non-zero. The
 counts only include packets that passed the BPF filter.
 
