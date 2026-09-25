@@ -21,8 +21,8 @@ make
 ## Usage
 
 ```
-netdump <interface> [bpf filter expression...]
-netdump -r <file.pcap> [bpf filter expression...]
+netdump [-v] <interface> [bpf filter expression...]
+netdump [-v] -r <file.pcap> [bpf filter expression...]
 ```
 
 - The interface is required. Without it (or with `-h` / `--help`) the program
@@ -31,6 +31,8 @@ netdump -r <file.pcap> [bpf filter expression...]
   syntax as tcpdump (`man pcap-filter`).
 - `-r` reads packets from a pcap file (e.g. one saved with `tcpdump -w` or
   Wireshark) instead of capturing; `-r -` reads from stdin. No root needed.
+- `-v` (verbose) adds extra details that are usually just noise, e.g. the
+  answers in DNS responses.
 - Capturing requires root (or `CAP_NET_RAW` + `CAP_NET_ADMIN` on Linux, read
   access to the `/dev/bpf*` devices on macOS).
 - Ctrl-C stops the capture and prints the number of packets received and
@@ -81,6 +83,7 @@ Values of the `proto` column:
 | number (e.g. `47`) | IPv4 with another protocol (IP protocol number) |
 | `ARP`              | ARP |
 | `DHCP`             | DHCP (UDP ports 67/68), see below |
+| `DNS`              | DNS (UDP port 53), see below |
 | `IPv6`             | IPv6 (not decoded further) |
 | `0x....`           | other ethertype, in hex |
 | `STP`              | Spanning Tree BPDU (802.3/LLC, or Cisco PVST+ over SNAP) |
@@ -118,6 +121,28 @@ for `OFFER` and `ACK`:
 ```
 
 Plain BOOTP packets (without a DHCP message type) are shown as UDP.
+
+For DNS, the info is the question (type and name). Responses also show the
+error code if the lookup failed (`NXDOMAIN`, `SERVFAIL`, `REFUSED`, ...):
+
+```
+... DNS    40000    53 A example.com
+... DNS       53 40000 A example.com
+... DNS       53 40000 A nincs.example.com NXDOMAIN
+```
+
+With `-v`, successful responses also show the answer: the first IPv4/IPv6
+address (following CNAME chains), otherwise the first record (CNAME, PTR, NS,
+MX or SRV target), then `+N` for the remaining answer records; `NODATA` if the
+name exists but has no record of the asked type:
+
+```
+... DNS       53 40000 A www.example.com -> 1.2.3.4 +3
+... DNS       53 40000 PTR 34.216.184.93.in-addr.arpa -> host.example.com
+... DNS       53 40000 AAAA example.com NODATA
+```
+
+Only DNS over UDP is decoded.
 
 For ARP, the info is the kind of message:
 

@@ -1,20 +1,21 @@
 /*
  * netdump - minimal tcpdump alternative (libpcap)
  *
- * Usage: netdump <interface> [bpf filter expression...]
- *        netdump -r <file.pcap> [bpf filter expression...]
+ * Usage: netdump [-v] <interface> [bpf filter expression...]
+ *        netdump [-v] -r <file.pcap> [bpf filter expression...]
  *
  * One line per packet, fixed-width columns:
  *   vlan src-mac dst-mac src-ip dst-ip proto sport dport [info]
  *
  * No name resolution: addresses and ports are always numeric.
- * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP, DHCP).
+ * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP, DHCP, DNS).
  */
 
 #include <pcap.h>
 
 #include <arpa/inet.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +68,7 @@
 #define W_PORT  5
 
 static pcap_t *handle;
+static int verbose;     /* -v: extra details, e.g. DNS answers */
 
 static void on_signal(int sig)
 {
@@ -237,6 +239,222 @@ static int fmt_dhcp(char *out, size_t n, const u_char *d, size_t len)
     return 1;
 }
 
+/* append printf-style to a string, never overflowing it */
+static void append(char *out, size_t n, const char *fmt, ...)
+{
+    size_t len = strlen(out);
+    va_list ap;
+
+    if (len + 1 >= n)
+        return;
+    va_start(ap, fmt);
+    vsnprintf(out + len, n - len, fmt, ap);
+    va_end(ap);
+}
+
+#define DNS_PORT     53
+#define DNS_HDR_LEN  12
+#define DNS_MAX_NAME 128    /* longer names are cut, marked with "..." */
+
+#define DNS_TYPE_A     1
+#define DNS_TYPE_NS    2
+#define DNS_TYPE_CNAME 5
+#define DNS_TYPE_PTR   12
+#define DNS_TYPE_MX    15
+#define DNS_TYPE_AAAA  28
+#define DNS_TYPE_SRV   33
+
+static const char *dns_type_name(uint16_t t, char *buf, size_t n)
+{
+    switch (t) {
+    case 1:   return "A";
+    case 2:   return "NS";
+    case 5:   return "CNAME";
+    case 6:   return "SOA";
+    case 12:  return "PTR";
+    case 15:  return "MX";
+    case 16:  return "TXT";
+    case 28:  return "AAAA";
+    case 33:  return "SRV";
+    case 64:  return "SVCB";
+    case 65:  return "HTTPS";
+    case 255: return "ANY";
+    }
+    snprintf(buf, n, "TYPE%u", t);
+    return buf;
+}
+
+static const char *dns_rcode_names[] = {
+    "NOERROR", "FORMERR", "SERVFAIL", "NXDOMAIN", "NOTIMP", "REFUSED",
+};
+
+static const char *dns_opcode_names[] = {
+    [1] = "IQUERY", [2] = "STATUS", [4] = "NOTIFY", [5] = "UPDATE",
+};
+
+/*
+ * Decode a (possibly compressed) domain name at *pos into out. On success
+ * *pos is moved past the name at its original position and 1 is returned.
+ */
+static int dns_name(const u_char *msg, size_t len, size_t *pos,
+                    char *out, size_t n)
+{
+    size_t p = *pos, w = 0, end = 0;
+    int jumps = 0, cut = 0;
+
+    for (;;) {
+        if (p >= len)
+            return 0;
+        uint8_t l = msg[p];
+        if ((l & 0xc0) == 0xc0) {           /* compression pointer */
+            if (p + 1 >= len || ++jumps > 16)
+                return 0;
+            if (!end)
+                end = p + 2;
+            p = ((size_t)(l & 0x3f) << 8) | msg[p + 1];
+            continue;
+        }
+        if (l & 0xc0)
+            return 0;                       /* reserved label types */
+        if (l == 0) {
+            p++;
+            break;
+        }
+        if (p + 1 + l > len)
+            return 0;
+        for (size_t i = 0; i <= l; i++) {
+            char c = i == 0 ? '.' : (char)msg[p + i];
+            if (i == 0 && w == 0)
+                continue;                   /* no leading dot */
+            if (c < 0x21 || c > 0x7e)
+                c = '?';
+            if (w + 4 < n && w < DNS_MAX_NAME)
+                out[w++] = c;
+            else
+                cut = 1;
+        }
+        p += 1 + l;
+    }
+    if (w == 0)
+        out[w++] = '.';                     /* root */
+    out[w] = '\0';
+    if (cut)
+        snprintf(out + w, n - w, "...");
+    *pos = end ? end : p;
+    return 1;
+}
+
+/*
+ * DNS summary: "<qtype> <qname>", plus the rcode for error responses.
+ * With -v, successful responses also get "-> <answer>" (first A/AAAA if
+ * any, else the first record) and "+N" for the other answer records, or
+ * NODATA if there are none.
+ * Returns 0 if it doesn't look like DNS.
+ */
+static int fmt_dns(char *out, size_t n, const u_char *d, size_t len)
+{
+    char name[DNS_MAX_NAME + 8], val[DNS_MAX_NAME + 8], tbuf[12];
+
+    if (len < DNS_HDR_LEN)
+        return 0;
+    uint16_t flags = rd16(d + 2);
+    uint16_t qd = rd16(d + 4), an = rd16(d + 6);
+    int is_resp = flags >> 15;
+    unsigned opcode = (flags >> 11) & 0x0f, rcode = flags & 0x0f;
+    size_t pos = DNS_HDR_LEN;
+
+    out[0] = '\0';
+    if (opcode) {
+        if (opcode < NELEM(dns_opcode_names) && dns_opcode_names[opcode])
+            append(out, n, "%s ", dns_opcode_names[opcode]);
+        else
+            append(out, n, "OPCODE%u ", opcode);
+    }
+    if (qd >= 1) {
+        if (!dns_name(d, len, &pos, name, sizeof name) || pos + 4 > len)
+            return 0;
+        uint16_t qtype = rd16(d + pos);
+        pos += 4;
+        append(out, n, "%s %s", dns_type_name(qtype, tbuf, sizeof tbuf), name);
+        /* skip any further questions (practically never present) */
+        for (unsigned i = 1; i < qd; i++) {
+            if (!dns_name(d, len, &pos, name, sizeof name) || pos + 4 > len)
+                return 1;
+            pos += 4;
+        }
+    }
+    if (!is_resp)
+        return qd >= 1 || opcode;
+
+    if (rcode) {
+        if (rcode < NELEM(dns_rcode_names))
+            append(out, n, " %s", dns_rcode_names[rcode]);
+        else
+            append(out, n, " RCODE%u", rcode);
+        return 1;
+    }
+    if (!verbose)
+        return 1;
+    if (an == 0) {
+        append(out, n, " NODATA");
+        return 1;
+    }
+
+    /* prefer the first address record (skipping CNAME chains), else the first record */
+    size_t first = 0, addr = 0;
+    uint16_t ftype = 0, frdlen = 0, atype = 0, ardlen = 0;
+    for (unsigned i = 0; i < an; i++) {
+        if (!dns_name(d, len, &pos, name, sizeof name) || pos + 10 > len)
+            break;
+        uint16_t t = rd16(d + pos), rl = rd16(d + pos + 8);
+        pos += 10;
+        if (pos + rl > len)
+            break;
+        if (!first) {
+            first = pos; ftype = t; frdlen = rl;
+        }
+        if ((t == DNS_TYPE_A && rl == 4) || (t == DNS_TYPE_AAAA && rl == 16)) {
+            addr = pos; atype = t; ardlen = rl;
+            break;
+        }
+        pos += rl;
+    }
+    if (addr) {
+        first = addr; ftype = atype; frdlen = ardlen;
+    }
+    if (!first)
+        return 1;
+
+    if (ftype == DNS_TYPE_A && frdlen == 4) {
+        fmt_ip(val, sizeof val, d + first);
+        append(out, n, " -> %s", val);
+    } else if (ftype == DNS_TYPE_AAAA && frdlen == 16) {
+        inet_ntop(AF_INET6, d + first, val, sizeof val);
+        append(out, n, " -> %s", val);
+    } else if (ftype == DNS_TYPE_CNAME || ftype == DNS_TYPE_PTR ||
+               ftype == DNS_TYPE_NS) {
+        size_t p2 = first;
+        if (!dns_name(d, len, &p2, val, sizeof val))
+            return 1;
+        append(out, n, " -> %s%s", ftype == DNS_TYPE_CNAME ? "CNAME " : "", val);
+    } else if (ftype == DNS_TYPE_MX && frdlen > 2) {
+        size_t p2 = first + 2;
+        if (!dns_name(d, len, &p2, val, sizeof val))
+            return 1;
+        append(out, n, " -> %s", val);
+    } else if (ftype == DNS_TYPE_SRV && frdlen > 6) {
+        size_t p2 = first + 6;
+        if (!dns_name(d, len, &p2, val, sizeof val))
+            return 1;
+        append(out, n, " -> %s:%u", val, rd16(d + first + 4));
+    } else {
+        append(out, n, " -> %s", dns_type_name(ftype, tbuf, sizeof tbuf));
+    }
+    if (an > 1)
+        append(out, n, " +%u", an - 1);
+    return 1;
+}
+
 /* ICMP type/code as short text (fits the port columns); unknown ones as "type/code" */
 static void fmt_icmp(char *out, size_t n, uint8_t type, uint8_t code)
 {
@@ -324,7 +542,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     char vlan[8] = "", smac[18] = "", dmac[18] = "";
     char sip[16] = "", dip[16] = "", proto[16] = "";
     char sport[8] = "", dport[8] = "";
-    char icmp[32] = "", info[96] = "";
+    char icmp[32] = "", info[320] = "";
 
     size_t caplen = h->caplen;
     if (caplen < ETH_HDR_LEN)
@@ -423,6 +641,9 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                     (dp == DHCP_SERVER_PORT || dp == DHCP_CLIENT_PORT) &&
                     fmt_dhcp(info, sizeof info, l4 + 8, avail))
                     strcpy(proto, "DHCP");
+                else if ((sp == DNS_PORT || dp == DNS_PORT) &&
+                         fmt_dns(info, sizeof info, l4 + 8, avail))
+                    strcpy(proto, "DNS");
             }
         }
         if (p == IPPROTO_NUM_ICMP && frag_off == 0 && ihl >= 20 &&
@@ -555,8 +776,11 @@ static int list_interfaces(void)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "Usage: %s <interface> [bpf filter expression...]\n"
-            "       %s -r <file.pcap> [bpf filter expression...]\n\n",
+            "Usage: %s [-v] <interface> [bpf filter expression...]\n"
+            "       %s [-v] -r <file.pcap> [bpf filter expression...]\n"
+            "\n"
+            "  -r file  read packets from a pcap file ('-' for stdin)\n"
+            "  -v       verbose: extra details (e.g. DNS answers)\n\n",
             prog, prog);
 }
 
@@ -583,21 +807,36 @@ int main(int argc, char **argv)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
 
-    if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-        usage(argv[0]);
-        list_interfaces();
-        return 1;
-    }
+    const char *dev = NULL;
+    int offline = 0, rc, i;
 
-    int offline = !strcmp(argv[1], "-r");
-    int filter_from = offline ? 3 : 2;
-    int rc;
-
-    if (offline && argc < 3) {
-        usage(argv[0]);
-        return 1;
+    /* options first, then the interface (unless -r), then the filter */
+    for (i = 1; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        if (!strcmp(argv[i], "--")) {
+            i++;
+            break;
+        } else if (!strcmp(argv[i], "-v")) {
+            verbose = 1;
+        } else if (!strcmp(argv[i], "-r") && i + 1 < argc) {
+            offline = 1;
+            dev = argv[++i];
+        } else {
+            usage(argv[0]);
+            if (strcmp(argv[i], "-h") && strcmp(argv[i], "--help"))
+                return 1;
+            list_interfaces();
+            return 1;
+        }
     }
-    const char *dev = offline ? argv[2] : argv[1];
+    if (!offline) {
+        if (i >= argc) {
+            usage(argv[0]);
+            list_interfaces();
+            return 1;
+        }
+        dev = argv[i++];
+    }
+    int filter_from = i;
 
     if (offline) {
         handle = pcap_open_offline(dev, errbuf);   /* "-" reads stdin */
