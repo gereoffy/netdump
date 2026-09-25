@@ -187,6 +187,28 @@ next-hop MTU for `frag-needed` and the new gateway for redirects:
 ... ICMP   redir-host  ICMP 10.0.0.1 gw=172.18.11.1
 ```
 
+## Summary on exit
+
+When the capture stops (Ctrl-C, or the end of a `-r` file), netdump prints a
+summary to stderr, so after a few minutes of traffic you can see at a glance
+whether requests get answers:
+
+```
+--- 12345 packets (kernel: 12400 received, 0 dropped)
+protocols: TCP 10000  IPv6 500  UDP 300  DNS 150  ARP 80  STP 60  ICMP 40  DHCP 8
+TCP:       SYN 120  SYN+ACK 118  FIN 90  RST 5
+ARP:       request 50  reply 25  announce 3
+DHCP:      DISCOVER 2  OFFER 0  REQUEST 0  ACK 0
+DNS:       query 150  response 148  NXDOMAIN 3  SERVFAIL 1
+ICMP:      echo-req 10  echo-reply 10  port-unr 12
+```
+
+A group appears only if it had any traffic. Request/answer counters (SYN and
+SYN+ACK, ARP request and reply, DISCOVER/OFFER/REQUEST/ACK, DNS query and
+response, echo request and reply) are always shown within a group, because a
+zero there is the telling part; everything else only when non-zero. The
+counts only include packets that passed the BPF filter.
+
 The header line goes to stdout, status messages go to stderr. Output is
 line-buffered, so it shows up immediately in a pipe (`| grep`, `| tee`).
 

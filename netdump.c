@@ -349,9 +349,11 @@ static int dns_name(const u_char *msg, size_t len, size_t *pos,
  * With -v, successful responses also get "-> <answer>" (first A/AAAA if
  * any, else the first record) and "+N" for the other answer records, or
  * NODATA if there are none.
+ * Sets *resp (query/response) and *rc (rcode) for the statistics.
  * Returns 0 if it doesn't look like DNS.
  */
-static int fmt_dns(char *out, size_t n, const u_char *d, size_t len)
+static int fmt_dns(char *out, size_t n, const u_char *d, size_t len,
+                   int *resp, unsigned *rc)
 {
     char name[DNS_MAX_NAME + 8], val[DNS_MAX_NAME + 8], tbuf[12];
 
@@ -363,6 +365,8 @@ static int fmt_dns(char *out, size_t n, const u_char *d, size_t len)
     unsigned opcode = (flags >> 11) & 0x0f, rcode = flags & 0x0f;
     size_t pos = DNS_HDR_LEN;
 
+    *resp = is_resp;
+    *rc = rcode;
     out[0] = '\0';
     if (opcode) {
         if (opcode < NELEM(dns_opcode_names) && dns_opcode_names[opcode])
@@ -534,6 +538,101 @@ static void fmt_icmp_error(char *out, size_t n, const u_char *icmp, size_t len)
     }
 }
 
+/*
+ * Summary statistics printed on exit. Core counters are always shown for a
+ * group with any traffic (a zero there, e.g. no SYN+ACK or no OFFER, is the
+ * interesting part); other counters only when non-zero.
+ */
+#define MAX_COUNTERS 32
+
+struct counter {
+    char name[16];
+    unsigned long n;
+};
+
+struct group {
+    const char *title;
+    int ncore, used;
+    struct counter c[MAX_COUNTERS];
+};
+
+static unsigned long st_total;
+static struct group st_proto = { "protocols", 0, 0, {{"", 0}} };
+static struct group st_tcp = { "TCP", 4, 4,
+    { {"SYN", 0}, {"SYN+ACK", 0}, {"FIN", 0}, {"RST", 0} } };
+static struct group st_arp = { "ARP", 2, 2, { {"request", 0}, {"reply", 0} } };
+static struct group st_dhcp = { "DHCP", 4, 4,
+    { {"DISCOVER", 0}, {"OFFER", 0}, {"REQUEST", 0}, {"ACK", 0} } };
+static struct group st_dns = { "DNS", 2, 2, { {"query", 0}, {"response", 0} } };
+static struct group st_icmp = { "ICMP", 2, 2,
+    { {"echo-req", 0}, {"echo-reply", 0} } };
+
+/* count one occurrence of name (up to the first space) in g */
+static void count(struct group *g, const char *name)
+{
+    char key[sizeof g->c[0].name];
+    size_t k;
+
+    for (k = 0; name[k] && name[k] != ' ' && k < sizeof key - 1; k++)
+        key[k] = name[k];
+    key[k] = '\0';
+
+    for (int i = 0; i < g->used; i++) {
+        if (!strcmp(g->c[i].name, key)) {
+            g->c[i].n++;
+            return;
+        }
+    }
+    if (g->used < MAX_COUNTERS) {
+        strcpy(g->c[g->used].name, key);
+        g->c[g->used++].n = 1;
+    }
+}
+
+static int cmp_counter_desc(const void *a, const void *b)
+{
+    unsigned long x = ((const struct counter *)a)->n;
+    unsigned long y = ((const struct counter *)b)->n;
+    return (x < y) - (x > y);
+}
+
+static void print_group(struct group *g, int sort)
+{
+    unsigned long sum = 0;
+    char title[16];
+
+    for (int i = 0; i < g->used; i++)
+        sum += g->c[i].n;
+    if (!sum)
+        return;
+    if (sort)
+        qsort(g->c, g->used, sizeof g->c[0], cmp_counter_desc);
+
+    snprintf(title, sizeof title, "%s:", g->title);
+    fprintf(stderr, "%-11s", title);
+    for (int i = 0; i < g->used; i++)
+        if (i < g->ncore || g->c[i].n)
+            fprintf(stderr, "%s%s %lu", i ? "  " : "", g->c[i].name, g->c[i].n);
+    fprintf(stderr, "\n");
+}
+
+static void print_stats(void)
+{
+    struct pcap_stat ps;
+
+    fprintf(stderr, "\n--- %lu packets", st_total);
+    if (pcap_stats(handle, &ps) == 0)
+        fprintf(stderr, " (kernel: %u received, %u dropped)",
+                ps.ps_recv, ps.ps_drop);
+    fprintf(stderr, "\n");
+    print_group(&st_proto, 1);
+    print_group(&st_tcp, 0);
+    print_group(&st_arp, 0);
+    print_group(&st_dhcp, 0);
+    print_group(&st_dns, 0);
+    print_group(&st_icmp, 0);
+}
+
 static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                           const u_char *pkt)
 {
@@ -543,6 +642,8 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     char sip[16] = "", dip[16] = "", proto[16] = "";
     char sport[8] = "", dport[8] = "";
     char icmp[32] = "", info[320] = "";
+    int tcp_flags = -1, dns_resp = -1;
+    unsigned dns_rcode = 0;
 
     size_t caplen = h->caplen;
     if (caplen < ETH_HDR_LEN)
@@ -625,6 +726,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                 long doff = (l4[12] >> 4) * 4;
                 long datalen = (long)rd16(ip + 2) - (long)ihl - doff;
                 fmt_tcp_info(info, sizeof info, l4[13], datalen);
+                tcp_flags = l4[13];
             }
             /* UDP length field covers the 8-byte header plus payload;
              * mostly noise, so only with -v */
@@ -646,7 +748,8 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                     strcpy(proto, "DHCP");
                     strcpy(info, tmp);
                 } else if ((sp == DNS_PORT || dp == DNS_PORT) &&
-                           fmt_dns(tmp, sizeof tmp, l4 + 8, avail)) {
+                           fmt_dns(tmp, sizeof tmp, l4 + 8, avail,
+                                   &dns_resp, &dns_rcode)) {
                     strcpy(proto, "DNS");
                     strcpy(info, tmp);
                 }
@@ -686,6 +789,34 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     }
 
 out:
+    st_total++;
+    count(&st_proto, proto[0] ? proto : "truncated");
+    if (tcp_flags >= 0) {
+        if ((tcp_flags & TCP_SYN) && (tcp_flags & TCP_ACK))
+            count(&st_tcp, "SYN+ACK");
+        else if (tcp_flags & TCP_SYN)
+            count(&st_tcp, "SYN");
+        if (tcp_flags & TCP_FIN)
+            count(&st_tcp, "FIN");
+        if (tcp_flags & TCP_RST)
+            count(&st_tcp, "RST");
+    }
+    if (!strcmp(proto, "ARP") && info[0])
+        count(&st_arp, info);
+    if (!strcmp(proto, "DHCP"))
+        count(&st_dhcp, info);
+    if (!strcmp(proto, "DNS")) {
+        count(&st_dns, dns_resp ? "response" : "query");
+        if (dns_resp && dns_rcode) {
+            if (dns_rcode < NELEM(dns_rcode_names))
+                count(&st_dns, dns_rcode_names[dns_rcode]);
+            else
+                count(&st_dns, "RCODE?");
+        }
+    }
+    if (icmp[0])
+        count(&st_icmp, icmp);
+
     printf("%-*s %-*s %-*s  %-*s %-*s %-*s ",
            W_VLAN, vlan, W_MAC, smac, W_MAC, dmac,
            W_IP, sip, W_IP, dip, W_PROTO, proto);
@@ -911,10 +1042,7 @@ int main(int argc, char **argv)
     if (rc == -1)
         fprintf(stderr, "pcap_loop: %s\n", pcap_geterr(handle));
 
-    struct pcap_stat st;
-    if (!offline && pcap_stats(handle, &st) == 0)
-        fprintf(stderr, "\n%u packets received, %u dropped by kernel\n",
-                st.ps_recv, st.ps_drop);
+    print_stats();
 
     pcap_close(handle);
     return rc == -1 ? 1 : 0;
