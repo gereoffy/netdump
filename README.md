@@ -45,8 +45,8 @@ make
 ## Usage
 
 ```
-netdump [-v] <interface> [bpf filter expression...]
-netdump [-v] -r <file.pcap> [bpf filter expression...]
+netdump [-v] [-s snaplen] [-w out.pcap] <interface> [bpf filter...]
+netdump [-v] [-w out.pcap] -r <file.pcap> [bpf filter...]
 ```
 
 - The interface is required. Without it (or with `-h` / `--help`) the program
@@ -55,6 +55,15 @@ netdump [-v] -r <file.pcap> [bpf filter expression...]
   syntax as tcpdump (`man pcap-filter`).
 - `-r` reads packets from a pcap file (e.g. one saved with `tcpdump -w` or
   Wireshark) instead of capturing; `-r -` reads from stdin. No root needed.
+- `-w file.pcap` also saves the packets (those passing the filter) to a pcap
+  file, while the screen output and the summary continue as usual (unlike
+  tcpdump, which goes silent with `-w`). Read it back later with `-r`, or open
+  it with tcpdump or Wireshark. Combined with `-r` it cuts a filtered part out
+  of a bigger capture.
+- `-s len` sets the capture length in bytes (default 1600, enough for all the
+  decoding; `0` = whole packets, useful with `-w` for later analysis in
+  Wireshark). Byte counts in the summary come from the IP headers, so they're
+  right with any `-s`.
 - `-v` (verbose) adds extra details that are usually just noise: the answers
   in DNS responses, the UDP payload length and full IPv6 addresses.
 - Capturing requires root (or `CAP_NET_RAW` + `CAP_NET_ADMIN` on Linux, read
@@ -70,6 +79,8 @@ sudo ./netdump eth0 tcp port 443
 sudo ./netdump eth0 vlan and host 10.0.0.1
 sudo ./netdump en0 arp or icmp
 ./netdump -r capture.pcap udp port 67 or udp port 68
+sudo ./netdump -w guest.pcap eth1
+sudo ./netdump -s 0 -w full.pcap eth2 host 10.1.2.3
 ```
 
 ## Output

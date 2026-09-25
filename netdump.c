@@ -1,8 +1,8 @@
 /*
  * netdump - minimal tcpdump alternative (libpcap)
  *
- * Usage: netdump [-v] <interface> [bpf filter expression...]
- *        netdump [-v] -r <file.pcap> [bpf filter expression...]
+ * Usage: netdump [-v] [-s snaplen] [-w out.pcap] <interface> [bpf filter...]
+ *        netdump [-v] [-w out.pcap] -r <file.pcap> [bpf filter...]
  *
  * One line per packet, fixed-width columns:
  *   vlan src-mac dst-mac src-ip dst-ip proto sport dport [info]
@@ -32,7 +32,8 @@
 #include <sys/types.h>
 #endif
 
-#define SNAPLEN 1600    /* whole DHCP packets; options start at byte 282 */
+#define SNAPLEN     1600    /* default: whole DHCP packets (options at byte 282) */
+#define SNAPLEN_MAX 262144  /* -s 0, like tcpdump */
 
 #define ETH_HDR_LEN   14
 #define VLAN_TAG_LEN  4
@@ -1148,7 +1149,9 @@ static void count_stats(const struct pkt *pk, const char *label,
 static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                           const u_char *pkt)
 {
-    (void)user;
+    /* -w: save the packet as captured, besides printing it */
+    if (user)
+        pcap_dump(user, h, pkt);
 
     struct pkt pk;
     memset(&pk, 0, sizeof pk);
@@ -1370,13 +1373,15 @@ static int list_interfaces(void)
 static void usage(const char *prog)
 {
     fprintf(stderr,
-            "Usage: %s [-v] <interface> [bpf filter expression...]\n"
-            "       %s [-v] -r <file.pcap> [bpf filter expression...]\n"
+            "Usage: %s [-v] [-s snaplen] [-w out.pcap] <interface> [bpf filter...]\n"
+            "       %s [-v] [-w out.pcap] -r <file.pcap> [bpf filter...]\n"
             "\n"
             "  -r file  read packets from a pcap file ('-' for stdin)\n"
+            "  -w file  also save the packets to a pcap file (output continues)\n"
+            "  -s len   capture length in bytes (default %d, 0 = whole packet)\n"
             "  -v       verbose: extra details (DNS answers, UDP payload length,\n"
             "           full IPv6 addresses)\n\n",
-            prog, prog);
+            prog, prog, SNAPLEN);
 }
 
 /* join argv[from..argc-1] with spaces into a malloc'd string */
@@ -1402,8 +1407,9 @@ int main(int argc, char **argv)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
 
-    const char *dev = NULL;
-    int offline = 0, rc, i;
+    const char *dev = NULL, *wfile = NULL;
+    int offline = 0, snaplen = SNAPLEN, rc, i;
+    pcap_dumper_t *dumper = NULL;
 
     /* options first, then the interface (unless -r), then the filter */
     for (i = 1; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
@@ -1415,6 +1421,20 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "-r") && i + 1 < argc) {
             offline = 1;
             dev = argv[++i];
+        } else if (!strcmp(argv[i], "-w") && i + 1 < argc) {
+            wfile = argv[++i];
+            if (!strcmp(wfile, "-")) {
+                fprintf(stderr, "-w -: writing to stdout would mix with the output\n");
+                return 1;
+            }
+        } else if (!strcmp(argv[i], "-s") && i + 1 < argc) {
+            char *end;
+            long v = strtol(argv[++i], &end, 10);
+            if (*end || v < 0 || v > SNAPLEN_MAX) {
+                fprintf(stderr, "-s: invalid capture length '%s'\n", argv[i]);
+                return 1;
+            }
+            snaplen = v ? (int)v : SNAPLEN_MAX;
         } else {
             usage(argv[0]);
             if (strcmp(argv[i], "-h") && strcmp(argv[i], "--help"))
@@ -1445,7 +1465,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "%s: %s\n", dev, errbuf);
             return 1;
         }
-        pcap_set_snaplen(handle, SNAPLEN);
+        pcap_set_snaplen(handle, snaplen);
         pcap_set_promisc(handle, 1);
         pcap_set_immediate_mode(handle, 1);
         pcap_set_timeout(handle, 100);
@@ -1486,6 +1506,15 @@ int main(int argc, char **argv)
         free(expr);
     }
 
+    if (wfile) {
+        dumper = pcap_dump_open(handle, wfile);
+        if (!dumper) {
+            fprintf(stderr, "%s\n", pcap_geterr(handle));  /* names the file */
+            pcap_close(handle);
+            return 1;
+        }
+    }
+
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;
@@ -1493,18 +1522,23 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &sa, NULL);
 
     setvbuf(stdout, NULL, _IOLBF, 0);
-    fprintf(stderr, "%s %s\n", offline ? "reading from" : "listening on", dev);
+    fprintf(stderr, "%s %s", offline ? "reading from" : "listening on", dev);
+    if (wfile)
+        fprintf(stderr, ", saving to %s", wfile);
+    fprintf(stderr, "\n");
     print_header();
     st_offline = offline;
     gettimeofday(&st_run_start, NULL);
 
-    rc = pcap_loop(handle, -1, handle_packet, NULL);
+    rc = pcap_loop(handle, -1, handle_packet, (u_char *)dumper);
     if (rc == -1)
         fprintf(stderr, "pcap_loop: %s\n", pcap_geterr(handle));
 
     gettimeofday(&st_run_stop, NULL);
     print_stats();
 
+    if (dumper)
+        pcap_dump_close(dumper);
     pcap_close(handle);
     return rc == -1 ? 1 : 0;
 }
