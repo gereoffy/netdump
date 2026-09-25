@@ -521,6 +521,7 @@ static const char *radius_code_names[] = {
     [2]  = "Access-Accept",
     [3]  = "Access-Reject",
     [11] = "Access-Challenge",
+    [12] = "Status-Server",     /* NAS health check, answered with Accept */
 };
 
 /*

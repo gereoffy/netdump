@@ -185,7 +185,8 @@ the first answer record:
 ```
 
 For RADIUS (UDP port 1812), the info is the packet type (`Access-Request`,
-`Access-Accept`, `Access-Reject`, `Access-Challenge`) and the user name, if the
+`Access-Accept`, `Access-Reject`, `Access-Challenge`, and `Status-Server`,
+the health check NASes send, answered with an Accept) and the user name, if the
 packet contains one: requests always do, an Accept often does (depends on the
 server), Challenge and Reject usually don't. With 802.1X/EAP this is the outer
 identity, which may be anonymous (e.g. `anonymous@realm`). What matters, as
