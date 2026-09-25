@@ -8,7 +8,8 @@
  *   vlan src-mac dst-mac src-ip dst-ip proto sport dport [info]
  *
  * No name resolution: addresses and ports are always numeric.
- * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP, DHCP, DNS, QUIC).
+ * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP, DHCP, DNS, mDNS,
+ * QUIC).
  */
 
 #include <pcap.h>
@@ -459,6 +460,52 @@ static int fmt_dns(char *out, size_t n, const u_char *d, size_t len,
     return 1;
 }
 
+#define MDNS_PORT 5353
+
+/*
+ * mDNS: "<qtype> <qname>" (+N more questions) for queries; responses are
+ * mostly unsolicited announcements without questions, so show the first
+ * answer record: "answer <type> <name>" (+N more). Returns 0 if it doesn't
+ * look like DNS; *resp tells query/response for the statistics.
+ */
+static int fmt_mdns(char *out, size_t n, const u_char *d, size_t len,
+                    int *resp)
+{
+    char name[DNS_MAX_NAME + 8], tbuf[12];
+    size_t pos = DNS_HDR_LEN;
+
+    if (len < DNS_HDR_LEN)
+        return 0;
+    uint16_t qd = rd16(d + 4), an = rd16(d + 6);
+    *resp = rd16(d + 2) >> 15;
+    out[0] = '\0';
+
+    if (!*resp) {
+        if (qd == 0 || !dns_name(d, len, &pos, name, sizeof name) ||
+            pos + 4 > len)
+            return 0;
+        append(out, n, "%s %s", dns_type_name(rd16(d + pos), tbuf, sizeof tbuf),
+               name);
+        if (qd > 1)
+            append(out, n, " +%u", qd - 1);
+        return 1;
+    }
+
+    for (unsigned i = 0; i < qd; i++) {     /* skip questions, if any */
+        if (!dns_name(d, len, &pos, name, sizeof name) || pos + 4 > len)
+            return 0;
+        pos += 4;
+    }
+    if (an == 0 || !dns_name(d, len, &pos, name, sizeof name) ||
+        pos + 10 > len)
+        return 0;
+    append(out, n, "answer %s %s", dns_type_name(rd16(d + pos), tbuf, sizeof tbuf),
+           name);
+    if (an > 1)
+        append(out, n, " +%u", an - 1);
+    return 1;
+}
+
 #define QUIC_PORT       443
 #define QUIC_FIXED_BIT  0x40
 #define QUIC_LONG_HDR   0x80
@@ -601,6 +648,7 @@ static struct group st_arp = { "ARP", 2, 2, { {"request", 0}, {"reply", 0} } };
 static struct group st_dhcp = { "DHCP", 4, 4,
     { {"DISCOVER", 0}, {"OFFER", 0}, {"REQUEST", 0}, {"ACK", 0} } };
 static struct group st_dns = { "DNS", 2, 2, { {"query", 0}, {"response", 0} } };
+static struct group st_mdns = { "mDNS", 2, 2, { {"query", 0}, {"response", 0} } };
 static struct group st_quic = { "QUIC", 3, 3,
     { {"client-Initial", 0}, {"server-Initial", 0}, {"Handshake", 0} } };
 static struct group st_icmp = { "ICMP", 2, 2,
@@ -669,6 +717,7 @@ static void print_stats(void)
     print_group(&st_arp, 0);
     print_group(&st_dhcp, 0);
     print_group(&st_dns, 0);
+    print_group(&st_mdns, 0);
     print_group(&st_quic, 0);
     print_group(&st_icmp, 0);
 }
@@ -682,7 +731,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     char sip[16] = "", dip[16] = "", proto[16] = "";
     char sport[8] = "", dport[8] = "";
     char icmp[32] = "", info[320] = "";
-    int tcp_flags = -1, dns_resp = -1;
+    int tcp_flags = -1, dns_resp = -1, mdns_resp = 0;
     unsigned dns_rcode = 0;
 
     size_t caplen = h->caplen;
@@ -792,6 +841,10 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                                    &dns_resp, &dns_rcode)) {
                     strcpy(proto, "DNS");
                     strcpy(info, tmp);
+                } else if ((sp == MDNS_PORT || dp == MDNS_PORT) &&
+                           fmt_mdns(tmp, sizeof tmp, l4 + 8, avail, &mdns_resp)) {
+                    strcpy(proto, "mDNS");
+                    strcpy(info, tmp);
                 } else if (sp == QUIC_PORT || dp == QUIC_PORT) {
                     tmp[0] = '\0';
                     if (fmt_quic(tmp, sizeof tmp, l4 + 8, avail)) {
@@ -863,6 +916,8 @@ out:
                 count(&st_dns, "RCODE?");
         }
     }
+    if (!strcmp(proto, "mDNS"))
+        count(&st_mdns, mdns_resp ? "response" : "query");
     if (!strcmp(proto, "QUIC") && info[0] && info[0] != '(') {
         /* client -> server:443 Initial vs. the server's answer */
         if (!strcmp(info, "Initial"))

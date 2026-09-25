@@ -108,6 +108,7 @@ Values of the `proto` column:
 | `ARP`              | ARP |
 | `DHCP`             | DHCP (UDP ports 67/68), see below |
 | `DNS`              | DNS (UDP port 53), see below |
+| `mDNS`             | multicast DNS / Bonjour / Avahi (UDP port 5353), see below |
 | `QUIC`             | QUIC / HTTP/3 (UDP port 443), see below |
 | `IPv6`             | IPv6 (not decoded further) |
 | `0x....`           | other ethertype, in hex |
@@ -169,6 +170,17 @@ name exists but has no record of the asked type:
 ```
 
 Only DNS over UDP is decoded.
+
+mDNS (multicast DNS, UDP port 5353 to 224.0.0.251) is how phones, laptops,
+printers, Chromecasts etc. discover services on the local network. It's link
+local noise, not an error. Queries show the question (`+N` more questions);
+responses are mostly unsolicited announcements without a question, so they show
+the first answer record:
+
+```
+... mDNS    5353  5353 PTR _googlecast._tcp.local +2
+... mDNS    5353  5353 answer PTR _googlecast._tcp.local +5
+```
 
 For QUIC (UDP port 443 with the QUIC fixed bit set), long header packets show
 their type: `Initial` starts a connection (like a TCP SYN), then `Handshake`;
@@ -239,13 +251,14 @@ TCP:       SYN 120  SYN+ACK 118  FIN 90  RST 5
 ARP:       request 50  reply 25  announce 3
 DHCP:      DISCOVER 2  OFFER 0  REQUEST 0  ACK 0
 DNS:       query 150  response 148  NXDOMAIN 3  SERVFAIL 1
+mDNS:      query 210  response 95
 QUIC:      client-Initial 40  server-Initial 38  Handshake 30
 ICMP:      echo-req 10  echo-reply 10  port-unr 12
 ```
 
 A group appears only if it had any traffic. Request/answer counters (SYN and
 SYN+ACK, ARP request and reply, DISCOVER/OFFER/REQUEST/ACK, DNS query and
-response, QUIC client and server Initial and Handshake, echo request and reply) are always shown within a group, because a
+response, mDNS query and response, QUIC client and server Initial and Handshake, echo request and reply) are always shown within a group, because a
 zero there is the telling part; everything else only when non-zero. The
 counts only include packets that passed the BPF filter.
 
