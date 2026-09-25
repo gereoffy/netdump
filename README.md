@@ -47,7 +47,7 @@ sudo ./netdump en0 arp or icmp
 ```
 vlan src-mac           dst-mac           src-ip          dst-ip          proto  sport dport
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 10.0.0.1        192.168.100.200 TCP    51234   443 SYN
-100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         8.8.8.8         UDP     5353    53
+100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         8.8.8.8         UDP     5353    53 (48)
 4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         ICMP   echo-req
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff 1.2.3.4         5.6.7.8         47
      11:22:33:44:55:66 ff:ff:ff:ff:ff:ff 192.168.1.1     192.168.1.254   ARP
@@ -95,10 +95,12 @@ For TCP, the info after the ports is a readable summary of the flags:
 | `SYN+ACK`  | answer to a SYN |
 | `FIN`      | connection close |
 | `RESET`    | connection reset (RST) |
-| `len=N`    | segment carrying N bytes of payload |
+| `(N)`      | segment carrying N bytes of payload |
 | (nothing)  | plain ACK |
 
-Several items can appear together, separated by spaces, e.g. `FIN len=12`.
+Several items can appear together, separated by spaces, e.g. `FIN (12)`.
+
+For UDP, the payload length is shown the same way, e.g. `(48)`.
 
 ICMP types, shortened to fit the port columns:
 

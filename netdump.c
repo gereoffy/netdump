@@ -159,7 +159,7 @@ static void fmt_tcp_info(char *out, size_t n, uint8_t f, long datalen)
     if ((f & TCP_RST) && len < n)
         len += snprintf(out + len, n - len, "%sRESET", len ? " " : "");
     if (datalen > 0 && len < n)
-        snprintf(out + len, n - len, "%slen=%ld", len ? " " : "", datalen);
+        snprintf(out + len, n - len, "%s(%ld)", len ? " " : "", datalen);
 }
 
 #define NELEM(a) (sizeof(a) / sizeof((a)[0]))
@@ -291,6 +291,10 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                 long datalen = (long)rd16(ip + 2) - (long)ihl - doff;
                 fmt_tcp_info(info, sizeof info, l4[13], datalen);
             }
+            /* UDP length field covers the 8-byte header plus payload */
+            if (p == IPPROTO_NUM_UDP && caplen >= off + ihl + 6 &&
+                rd16(l4 + 4) > 8)
+                snprintf(info, sizeof info, "(%u)", rd16(l4 + 4) - 8);
         }
         if (p == IPPROTO_NUM_ICMP && frag_off == 0 && ihl >= 20 &&
             caplen >= off + ihl + 2) {
