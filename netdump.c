@@ -525,7 +525,7 @@ static const char *radius_code_names[] = {
 
 /*
  * RADIUS (UDP 1812): packet type and the user name, if the packet has one
- * (requests do, answers usually don't). Returns 0 if it doesn't look like
+ * (requests always, Accept often, depending on the server). Returns 0 if it doesn't look like
  * RADIUS.
  */
 static int fmt_radius(char *out, size_t n, const u_char *d, size_t len)

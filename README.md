@@ -186,12 +186,17 @@ the first answer record:
 
 For RADIUS (UDP port 1812), the info is the packet type (`Access-Request`,
 `Access-Accept`, `Access-Reject`, `Access-Challenge`) and the user name, if the
-packet contains one (requests do, answers usually don't). With 802.1X/EAP this
-is the outer identity, which may be anonymous (e.g. `anonymous@realm`):
+packet contains one: requests always do, an Accept often does (depends on the
+server), Challenge and Reject usually don't. With 802.1X/EAP this is the outer
+identity, which may be anonymous (e.g. `anonymous@realm`). What matters, as
+with SYN, DHCP or DNS, is whether requests get an answer, i.e. whether the
+RADIUS server works:
 
 ```
 ... RADIUS 51234  1812 Access-Request alice@example.com
-... RADIUS  1812 51234 Access-Reject
+... RADIUS  1812 51234 Access-Challenge
+... RADIUS 51234  1812 Access-Request alice@example.com
+... RADIUS  1812 51234 Access-Accept alice@example.com
 ```
 
 For QUIC (UDP port 443 with the QUIC fixed bit set), long header packets show
