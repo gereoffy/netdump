@@ -184,9 +184,9 @@ the first answer record:
 ... mDNS    5353  5353 answer PTR _googlecast._tcp.local +5
 ```
 
-For RADIUS (UDP port 1812), the info is the packet type (`Access-Request`,
-`Access-Accept`, `Access-Reject`, `Access-Challenge`, and `Status-Server`,
-the health check NASes send, answered with an Accept) and the user name, if the
+For RADIUS (UDP port 1812), the info is the packet type (`Request`, `Accept`,
+`Reject`, `Challenge` for Access-Request etc., and `Status-Server`, the health
+check NASes send, answered with an Accept) and the user name, if the
 packet contains one: requests always do, an Accept often does (depends on the
 server), Challenge and Reject usually don't. With 802.1X/EAP this is the outer
 identity, which may be anonymous (e.g. `anonymous@realm`). What matters, as
@@ -194,10 +194,10 @@ with SYN, DHCP or DNS, is whether requests get an answer, i.e. whether the
 RADIUS server works:
 
 ```
-... RADIUS 51234  1812 Access-Request alice@example.com
-... RADIUS  1812 51234 Access-Challenge
-... RADIUS 51234  1812 Access-Request alice@example.com
-... RADIUS  1812 51234 Access-Accept alice@example.com
+... RADIUS 51234  1812 Request alice@example.com
+... RADIUS  1812 51234 Challenge
+... RADIUS 51234  1812 Request alice@example.com
+... RADIUS  1812 51234 Accept alice@example.com
 ```
 
 For QUIC (UDP port 443 with the QUIC fixed bit set), long header packets show
@@ -315,7 +315,7 @@ ARP:       request 50  reply 25  announce 3
 DHCP:      DISCOVER 2  OFFER 0  REQUEST 0  ACK 0
 DNS:       query 150  response 148  NXDOMAIN 3  SERVFAIL 1
 mDNS:      query 210  response 95
-RADIUS:    Access-Request 30  Access-Accept 12  Access-Reject 2  Access-Challenge 16
+RADIUS:    Request 30  Accept 12  Reject 2  Challenge 16
 QUIC:      client-Initial 40  server-Initial 38  Handshake 30
 ICMP:      echo-req 10  echo-reply 10  port-unr 12
 ```

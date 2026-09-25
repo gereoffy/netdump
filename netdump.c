@@ -517,10 +517,10 @@ static int fmt_mdns(char *out, size_t n, const u_char *d, size_t len,
 #define RADIUS_ATTR_USER_NAME 1
 
 static const char *radius_code_names[] = {
-    [1]  = "Access-Request",
-    [2]  = "Access-Accept",
-    [3]  = "Access-Reject",
-    [11] = "Access-Challenge",
+    [1]  = "Request",
+    [2]  = "Accept",
+    [3]  = "Reject",
+    [11] = "Challenge",
     [12] = "Status-Server",     /* NAS health check, answered with Accept */
 };
 
@@ -680,7 +680,7 @@ static void fmt_icmp_error(char *out, size_t n, const u_char *icmp, size_t len)
 #define MAX_COUNTERS 32
 
 struct counter {
-    char name[24];
+    char name[16];
     unsigned long n;
 };
 
@@ -700,7 +700,7 @@ static struct group st_dhcp = { "DHCP", 4, 4,
 static struct group st_dns = { "DNS", 2, 2, { {"query", 0}, {"response", 0} } };
 static struct group st_mdns = { "mDNS", 2, 2, { {"query", 0}, {"response", 0} } };
 static struct group st_radius = { "RADIUS", 3, 3,
-    { {"Access-Request", 0}, {"Access-Accept", 0}, {"Access-Reject", 0} } };
+    { {"Request", 0}, {"Accept", 0}, {"Reject", 0} } };
 static struct group st_quic = { "QUIC", 3, 3,
     { {"client-Initial", 0}, {"server-Initial", 0}, {"Handshake", 0} } };
 static struct group st_icmp = { "ICMP", 2, 2,
