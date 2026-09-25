@@ -76,6 +76,7 @@ Values of the `proto` column:
 | `TCP`, `UDP`, `ICMP` | IPv4 with that protocol |
 | number (e.g. `47`) | IPv4 with another protocol (IP protocol number) |
 | `ARP`              | ARP |
+| `DHCP`             | DHCP (UDP ports 67/68), see below |
 | `IPv6`             | IPv6 (not decoded further) |
 | `0x....`           | other ethertype, in hex |
 | `STP`              | Spanning Tree BPDU (802.3/LLC, or Cisco PVST+ over SNAP) |
@@ -101,6 +102,18 @@ For TCP, the info after the ports is a readable summary of the flags:
 Several items can appear together, separated by spaces, e.g. `FIN (12)`.
 
 For UDP, the payload length is shown the same way, e.g. `(48)`.
+
+For DHCP, the info is the message type (`DISCOVER`, `OFFER`, `REQUEST`,
+`DECLINE`, `ACK`, `NAK`, `RELEASE`, `INFORM`), followed by the hostname the
+client sent (option 12) for client messages, or the assigned address (yiaddr)
+for `OFFER` and `ACK`:
+
+```
+     11:22:33:44:55:66 ff:ff:ff:ff:ff:ff  0.0.0.0         255.255.255.255 DHCP      68    67 REQUEST laptop
+     aa:bb:cc:dd:ee:ff 11:22:33:44:55:66  192.168.1.1     192.168.1.50    DHCP      67    68 ACK 192.168.1.50
+```
+
+Plain BOOTP packets (without a DHCP message type) are shown as UDP.
 
 ICMP types, shortened to fit the port columns:
 

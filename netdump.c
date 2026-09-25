@@ -7,7 +7,7 @@
  *   vlan src-mac dst-mac src-ip dst-ip proto sport dport [info]
  *
  * No name resolution: addresses and ports are always numeric.
- * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP).
+ * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP, DHCP).
  */
 
 #include <pcap.h>
@@ -27,7 +27,7 @@
 #include <sys/types.h>
 #endif
 
-#define SNAPLEN 256
+#define SNAPLEN 1600    /* whole DHCP packets; options start at byte 282 */
 
 #define ETH_HDR_LEN   14
 #define VLAN_TAG_LEN  4
@@ -164,6 +164,75 @@ static void fmt_tcp_info(char *out, size_t n, uint8_t f, long datalen)
 
 #define NELEM(a) (sizeof(a) / sizeof((a)[0]))
 
+#define DHCP_SERVER_PORT 67
+#define DHCP_CLIENT_PORT 68
+#define DHCP_FIXED_LEN   236     /* BOOTP header up to the magic cookie */
+#define DHCP_OPT_PAD     0
+#define DHCP_OPT_HOST    12
+#define DHCP_OPT_MSGTYPE 53
+#define DHCP_OPT_END     255
+
+static const char *dhcp_msg_names[] = {
+    [1] = "DISCOVER",
+    [2] = "OFFER",
+    [3] = "REQUEST",
+    [4] = "DECLINE",
+    [5] = "ACK",
+    [6] = "NAK",
+    [7] = "RELEASE",
+    [8] = "INFORM",
+};
+
+/*
+ * DHCP summary: message type, then the hostname for client messages or
+ * the assigned address for OFFER/ACK. Returns 0 if it's not DHCP.
+ */
+static int fmt_dhcp(char *out, size_t n, const u_char *d, size_t len)
+{
+    static const u_char cookie[4] = { 0x63, 0x82, 0x53, 0x63 };
+    char host[64] = "", addr[16];
+    int type = 0;
+
+    if (len < DHCP_FIXED_LEN + 4 || memcmp(d + DHCP_FIXED_LEN, cookie, 4))
+        return 0;
+
+    for (size_t i = DHCP_FIXED_LEN + 4; i < len; ) {
+        uint8_t opt = d[i++];
+        if (opt == DHCP_OPT_PAD)
+            continue;
+        if (opt == DHCP_OPT_END || i >= len)
+            break;
+        uint8_t olen = d[i++];
+        if (i + olen > len)
+            break;
+        if (opt == DHCP_OPT_MSGTYPE && olen >= 1) {
+            type = d[i];
+        } else if (opt == DHCP_OPT_HOST) {
+            size_t k;
+            for (k = 0; k < olen && k < sizeof host - 1; k++)
+                host[k] = (d[i + k] >= 0x20 && d[i + k] < 0x7f) ? d[i + k] : '?';
+            host[k] = '\0';
+        }
+        i += olen;
+    }
+    if (!type)
+        return 0;   /* plain BOOTP */
+
+    size_t w;
+    if (type < (int)NELEM(dhcp_msg_names) && dhcp_msg_names[type])
+        w = snprintf(out, n, "%s", dhcp_msg_names[type]);
+    else
+        w = snprintf(out, n, "type-%d", type);
+
+    if (w < n && (type == 2 || type == 5)) {
+        fmt_ip(addr, sizeof addr, d + 16);  /* yiaddr */
+        snprintf(out + w, n - w, " %s", addr);
+    } else if (w < n && d[0] == 1 && host[0]) {
+        snprintf(out + w, n - w, " %s", host);
+    }
+    return 1;
+}
+
 /* ICMP type/code as short text (fits the port columns); unknown ones as "type/code" */
 static void fmt_icmp(char *out, size_t n, uint8_t type, uint8_t code)
 {
@@ -202,7 +271,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     char vlan[8] = "", smac[18] = "", dmac[18] = "";
     char sip[16] = "", dip[16] = "", proto[16] = "";
     char sport[8] = "", dport[8] = "";
-    char icmp[32] = "", info[40] = "";
+    char icmp[32] = "", info[96] = "";
 
     size_t caplen = h->caplen;
     if (caplen < ETH_HDR_LEN)
@@ -295,6 +364,18 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
             if (p == IPPROTO_NUM_UDP && caplen >= off + ihl + 6 &&
                 rd16(l4 + 4) > 8)
                 snprintf(info, sizeof info, "(%u)", rd16(l4 + 4) - 8);
+
+            if (p == IPPROTO_NUM_UDP && caplen >= off + ihl + 8) {
+                uint16_t sp = rd16(l4), dp = rd16(l4 + 2);
+                size_t avail = caplen - (off + ihl + 8);
+                size_t ulen = rd16(l4 + 4) > 8 ? rd16(l4 + 4) - 8u : 0;
+                if (ulen < avail)
+                    avail = ulen;
+                if ((sp == DHCP_SERVER_PORT || sp == DHCP_CLIENT_PORT) &&
+                    (dp == DHCP_SERVER_PORT || dp == DHCP_CLIENT_PORT) &&
+                    fmt_dhcp(info, sizeof info, l4 + 8, avail))
+                    strcpy(proto, "DHCP");
+            }
         }
         if (p == IPPROTO_NUM_ICMP && frag_off == 0 && ihl >= 20 &&
             caplen >= off + ihl + 2) {
