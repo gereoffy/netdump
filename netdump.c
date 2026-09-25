@@ -68,7 +68,7 @@
 #define W_PORT  5
 
 static pcap_t *handle;
-static int verbose;     /* -v: extra details, e.g. DNS answers */
+static int verbose;     /* -v: extra details, e.g. DNS answers, UDP length */
 
 static void on_signal(int sig)
 {
@@ -626,8 +626,9 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                 long datalen = (long)rd16(ip + 2) - (long)ihl - doff;
                 fmt_tcp_info(info, sizeof info, l4[13], datalen);
             }
-            /* UDP length field covers the 8-byte header plus payload */
-            if (p == IPPROTO_NUM_UDP && caplen >= off + ihl + 6 &&
+            /* UDP length field covers the 8-byte header plus payload;
+             * mostly noise, so only with -v */
+            if (verbose && p == IPPROTO_NUM_UDP && caplen >= off + ihl + 6 &&
                 rd16(l4 + 4) > 8)
                 snprintf(info, sizeof info, "(%u)", rd16(l4 + 4) - 8);
 
@@ -780,7 +781,7 @@ static void usage(const char *prog)
             "       %s [-v] -r <file.pcap> [bpf filter expression...]\n"
             "\n"
             "  -r file  read packets from a pcap file ('-' for stdin)\n"
-            "  -v       verbose: extra details (e.g. DNS answers)\n\n",
+            "  -v       verbose: extra details (DNS answers, UDP payload length)\n\n",
             prog, prog);
 }
 

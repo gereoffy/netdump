@@ -31,8 +31,8 @@ netdump [-v] -r <file.pcap> [bpf filter expression...]
   syntax as tcpdump (`man pcap-filter`).
 - `-r` reads packets from a pcap file (e.g. one saved with `tcpdump -w` or
   Wireshark) instead of capturing; `-r -` reads from stdin. No root needed.
-- `-v` (verbose) adds extra details that are usually just noise, e.g. the
-  answers in DNS responses.
+- `-v` (verbose) adds extra details that are usually just noise: the answers
+  in DNS responses and the UDP payload length.
 - Capturing requires root (or `CAP_NET_RAW` + `CAP_NET_ADMIN` on Linux, read
   access to the `/dev/bpf*` devices on macOS).
 - Ctrl-C stops the capture and prints the number of packets received and
@@ -53,7 +53,7 @@ sudo ./netdump en0 arp or icmp
 ```
 vlan src-mac           dst-mac            src-ip          dst-ip          proto  sport dport
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  10.0.0.1        192.168.100.200 TCP    51234   443 SYN
-100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         8.8.8.8         UDP     5353    53 (48)
+100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         8.8.8.8         UDP     5353    53
 4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         5.6.7.8         ICMP   echo-req
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         5.6.7.8         47
      11:22:33:44:55:66 ff:ff:ff:ff:ff:ff  192.168.1.1     192.168.1.254   ARP                request
@@ -108,7 +108,8 @@ For TCP, the info after the ports is a readable summary of the flags:
 
 Several items can appear together, separated by spaces, e.g. `FIN (12)`.
 
-For UDP, the payload length is shown the same way, e.g. `(48)`.
+With `-v`, the UDP payload length is shown the same way, e.g. `(48)`. (UDP
+protocols that matter for troubleshooting, DHCP and DNS, are decoded anyway.)
 
 For DHCP, the info is the message type (`DISCOVER`, `OFFER`, `REQUEST`,
 `DECLINE`, `ACK`, `NAK`, `RELEASE`, `INFORM`), followed by the hostname the
