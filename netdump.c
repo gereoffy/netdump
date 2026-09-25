@@ -139,12 +139,12 @@ static const char *icmp_type_names[] = {
 #define TCP_FIN 0x01
 #define TCP_SYN 0x02
 #define TCP_RST 0x04
-#define TCP_PSH 0x08
 #define TCP_ACK 0x10
 
 /*
  * Readable TCP summary: SYN, SYN+ACK, FIN, RESET and the payload length
- * for PUSH segments. A plain ACK prints nothing.
+ * for segments carrying data. A plain ACK prints nothing.
+ * TCP has no length field: payload = IP total length - IP hdr - TCP hdr.
  */
 static void fmt_tcp_info(char *out, size_t n, uint8_t f, long datalen)
 {
@@ -158,7 +158,7 @@ static void fmt_tcp_info(char *out, size_t n, uint8_t f, long datalen)
         len += snprintf(out + len, n - len, "%sFIN", len ? " " : "");
     if ((f & TCP_RST) && len < n)
         len += snprintf(out + len, n - len, "%sRESET", len ? " " : "");
-    if ((f & TCP_PSH) && datalen >= 0 && len < n)
+    if (datalen > 0 && len < n)
         snprintf(out + len, n - len, "%slen=%ld", len ? " " : "", datalen);
 }
 

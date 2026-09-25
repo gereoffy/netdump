@@ -95,7 +95,7 @@ For TCP, the info after the ports is a readable summary of the flags:
 | `SYN+ACK`  | answer to a SYN |
 | `FIN`      | connection close |
 | `RESET`    | connection reset (RST) |
-| `len=N`    | PUSH segment carrying N bytes of payload |
+| `len=N`    | segment carrying N bytes of payload |
 | (nothing)  | plain ACK |
 
 Several items can appear together, separated by spaces, e.g. `FIN len=12`.
