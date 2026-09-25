@@ -1,16 +1,16 @@
 # netdump
 tcpdump alternative for quick pcap traffic visualisation
 
-Minimalista, libpcap alapú tcpdump alternatíva Linuxra és macOS-re.
-Csomagonként egy sort ír ki, fix szélességű oszlopokban, névfeloldás nélkül
-(minden cím és port szám formában jelenik meg).
+A minimal, libpcap-based tcpdump alternative for Linux and macOS.
+It prints one line per packet in fixed-width columns, with no name resolution
+(all addresses and ports are shown as numbers).
 
-## Fordítás
+## Building
 
-Kell hozzá egy C fordító és a libpcap.
+You need a C compiler and libpcap.
 
-- **macOS:** a libpcap a rendszer része, elég az Xcode Command Line Tools
-  (`xcode-select --install`).
+- **macOS:** libpcap ships with the system; the Xcode Command Line Tools are
+  enough (`xcode-select --install`).
 - **Debian/Ubuntu:** `sudo apt install build-essential libpcap-dev`
 - **Fedora/RHEL:** `sudo dnf install gcc make libpcap-devel`
 
@@ -18,22 +18,22 @@ Kell hozzá egy C fordító és a libpcap.
 make
 ```
 
-## Használat
+## Usage
 
 ```
-netdump <interface> [bpf filter kifejezés...]
+netdump <interface> [bpf filter expression...]
 ```
 
-- Az interfész megadása kötelező. Nélküle (vagy `-h` / `--help` esetén)
-  a program kiírja az elérhető interfészeket az IPv4 címükkel, majd kilép.
-- Az interfész utáni argumentumok opcionális BPF filterként működnek, ugyanazzal
-  a szintaxissal, mint a tcpdump-nál (`man pcap-filter`).
-- A capture-höz root jog (vagy Linuxon `CAP_NET_RAW` + `CAP_NET_ADMIN`,
-  macOS-en olvasási jog a `/dev/bpf*` eszközökhöz) kell.
-- Ctrl-C-re leáll, és kiírja a kapott, illetve a kernel által eldobott
-  csomagok számát.
+- The interface is required. Without it (or with `-h` / `--help`) the program
+  lists the available interfaces with their IPv4 addresses and exits.
+- Any arguments after the interface form an optional BPF filter, using the same
+  syntax as tcpdump (`man pcap-filter`).
+- Capturing requires root (or `CAP_NET_RAW` + `CAP_NET_ADMIN` on Linux, read
+  access to the `/dev/bpf*` devices on macOS).
+- Ctrl-C stops the capture and prints the number of packets received and
+  dropped by the kernel.
 
-Példák:
+Examples:
 
 ```bash
 sudo ./netdump en0
@@ -42,7 +42,7 @@ sudo ./netdump eth0 vlan and host 10.0.0.1
 sudo ./netdump en0 arp or icmp
 ```
 
-## Kimenet
+## Output
 
 ```
 vlan src-mac           dst-mac           src-ip          dst-ip          proto  sport dport
@@ -54,25 +54,25 @@ vlan src-mac           dst-mac           src-ip          dst-ip          proto  
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff                                 0x86dd
 ```
 
-| Oszlop    | Tartalom |
-|-----------|----------|
-| `vlan`    | 802.1Q VLAN ID; untagged/native csomagnál üres |
-| `src-mac` | forrás MAC cím |
-| `dst-mac` | cél MAC cím |
-| `src-ip`  | forrás IPv4 cím (ARP-nál a sender IP) |
-| `dst-ip`  | cél IPv4 cím (ARP-nál a target IP) |
-| `proto`   | `TCP`, `UDP`, `ICMP`, `ARP`; más IPv4 protokollnál a protokollszám, nem-IP csomagnál az ethertype hexben |
-| `sport`   | forrás port (csak TCP/UDP) |
-| `dport`   | cél port (csak TCP/UDP) |
+| Column    | Content |
+|-----------|---------|
+| `vlan`    | 802.1Q VLAN ID; empty for untagged/native packets |
+| `src-mac` | source MAC address |
+| `dst-mac` | destination MAC address |
+| `src-ip`  | source IPv4 address (sender IP for ARP) |
+| `dst-ip`  | destination IPv4 address (target IP for ARP) |
+| `proto`   | `TCP`, `UDP`, `ICMP`, `ARP`; the protocol number for other IPv4 protocols, the ethertype in hex for non-IP packets |
+| `sport`   | source port (TCP/UDP only) |
+| `dport`   | destination port (TCP/UDP only) |
 
-A fejléc a stdout-ra kerül, a státuszüzenetek a stderr-re. A kimenet soronként
-pufferelt, így pipe-ban (`| grep`, `| tee`) is azonnal megjelenik.
+The header line goes to stdout, status messages go to stderr. Output is
+line-buffered, so it shows up immediately in a pipe (`| grep`, `| tee`).
 
-## Korlátok
+## Limitations
 
-- Csak Ethernet (`DLT_EN10MB`) interfészt támogat. Például a macOS `lo0` vagy
-  a Linux `any` pszeudo-interfész nem működik.
-- Csak IPv4-et dolgoz fel. IPv6 csomagnál csak a MAC címek és az ethertype
-  (`0x86dd`) jelennek meg.
-- Csak egyetlen 802.1Q taget kezel, QinQ-t nem.
-- Fragmentált IP csomagnál a portok csak az első fragmentben jelennek meg.
+- Only Ethernet (`DLT_EN10MB`) interfaces are supported; e.g. macOS `lo0` or
+  the Linux `any` pseudo-interface won't work.
+- Only IPv4 is decoded. For IPv6 packets only the MAC addresses and the
+  ethertype (`0x86dd`) are shown.
+- Only a single 802.1Q tag is handled, no QinQ.
+- For fragmented IP packets, ports are shown only in the first fragment.
