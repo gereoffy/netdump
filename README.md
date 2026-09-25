@@ -56,7 +56,7 @@ netdump [-v] -r <file.pcap> [bpf filter expression...]
 - `-r` reads packets from a pcap file (e.g. one saved with `tcpdump -w` or
   Wireshark) instead of capturing; `-r -` reads from stdin. No root needed.
 - `-v` (verbose) adds extra details that are usually just noise: the answers
-  in DNS responses and the UDP payload length.
+  in DNS responses, the UDP payload length and full IPv6 addresses.
 - Capturing requires root (or `CAP_NET_RAW` + `CAP_NET_ADMIN` on Linux, read
   access to the `/dev/bpf*` devices on macOS).
 - Ctrl-C stops the capture and prints the number of packets received and
@@ -201,8 +201,21 @@ resumed connections (`0-RTT`) need less handshaking.
 
 IPv6 packets are decoded the same way as IPv4 (TCP, UDP, DNS, mDNS, QUIC,
 ...), with a `6` appended to the protocol name (`TCP6`, `DNS6`, `ICMP6`).
-IPv6 addresses (up to 39 characters) don't fit the IP columns, so those stay
-empty and the addresses are shown at the end of the line as `[src > dst]`.
+IPv6 addresses (up to 39 characters) are shortened to fit the 15-character IP
+columns: short ones are shown as is (`fe80::1`, `2001:db8::53`), longer ones
+as the first two groups, `..`, and as many whole groups from the end as fit,
+so both the network and the host part stay recognizable:
+
+| Address                                 | Shown as          |
+|-----------------------------------------|-------------------|
+| `2001:738:4403:58::1`                   | `2001:738..58::1` |
+| `2001:4ca0:108:42:0:80:6:9`             | `2001:4ca0..6:9`  |
+| `240b:400f:11:2001:a90b:597:a538:fa77`  | `240b:400f..fa77` |
+| `fe80::6e31:eff:fe23:8cd4`              | `fe80..fe23:8cd4` |
+| `::ffff:192.168.1.10` (IPv4-mapped)     | `192.168.1.10`    |
+
+With `-v`, the full addresses are also shown at the end of the line as
+`[src > dst]`.
 
 For ICMPv6, the type is shown in place of the ports, like for ICMP. The most
 interesting ones are Neighbor Discovery, IPv6's replacement for ARP: `NS`
@@ -213,11 +226,11 @@ problem). Errors show the original packet like ICMP does, plus the MTU for
 `pkt-too-big`:
 
 ```
-... ICMP6  NS          fe80::1 [fe80::5054:ff:fe12:34ab > fe80::1]
-... ICMP6  NA          fe80::1 [fe80::1 > fe80::5054:ff:fe12:34ab]
-... ICMP6  RA          [fe80::1 > ff02::1]
-... ICMP6  pkt-too-big TCP [2001:db8:10::53]:443 mtu=1280 [2001:db8::1 > 2001:db8:10::25]
-... DNS6   40000    53 AAAA ipv6.example.com [2001:db8:10::25 > 2001:db8:10::53]
+... fe80..fe12:34ab fe80::1         ICMP6  NS          fe80::1
+... fe80::1         fe80..fe12:34ab ICMP6  NA          fe80::1
+... fe80::1         ff02::1         ICMP6  RA
+... 2001:db8::1     2001:db8:10::25 ICMP6  pkt-too-big TCP [2001:db8:10::53]:443 mtu=1280
+... 2001:db8:10::25 2001:db8:10::53 DNS6   40000    53 AAAA ipv6.example.com
 ```
 
 Other ICMPv6 types: `echo-req`, `echo-reply`, `net-unr`, `adm-prohib`,
@@ -302,7 +315,6 @@ line-buffered, so it shows up immediately in a pipe (`| grep`, `| tee`).
 
 - Only Ethernet (`DLT_EN10MB`) interfaces are supported; e.g. macOS `lo0` or
   the Linux `any` pseudo-interface won't work.
-- IPv6 addresses don't fit the IP columns; they're shown at the end of the
-  line instead.
+- Long IPv6 addresses are shortened in the IP columns (full ones with `-v`).
 - Only a single 802.1Q tag is handled, no QinQ.
 - For fragmented IP packets, ports are shown only in the first fragment.

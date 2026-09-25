@@ -69,7 +69,7 @@
 #define W_PORT  5
 
 static pcap_t *handle;
-static int verbose;     /* -v: extra details, e.g. DNS answers, UDP length */
+static int verbose;     /* -v: extra details (DNS answers, UDP length, ...) */
 
 static void on_signal(int sig)
 {
@@ -801,6 +801,55 @@ static void fmt_ip6(char *out, size_t n, const u_char *p)
         snprintf(out, n, "?");
 }
 
+/*
+ * IPv6 address shortened to fit the IP column: as is if it fits, else the
+ * first two groups, "..", and as many whole groups from the end as fit,
+ * e.g. 2001:738:4403:58::1 -> 2001:738..58::1, so both the network and
+ * the host part stay recognizable.
+ */
+static void fmt_ip6_short(char *out, size_t n, const u_char *p)
+{
+    char s[INET6_ADDRSTRLEN];
+    size_t len, head, budget, best;
+
+    fmt_ip6(s, sizeof s, p);
+    len = strlen(s);
+    if (len <= W_IP) {
+        snprintf(out, n, "%s", s);
+        return;
+    }
+
+    /* embedded IPv4 (e.g. ::ffff:a.b.c.d): the IPv4 part is what matters */
+    if (strchr(s, '.')) {
+        snprintf(out, n, "%s", strrchr(s, ':') + 1);
+        return;
+    }
+
+    /* head: up to the second ':' or the "::", whichever comes first */
+    const char *dc = strstr(s, "::");
+    const char *c1 = strchr(s, ':');
+    const char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+    head = c2 ? (size_t)(c2 - s) : len;
+    if (dc && (size_t)(dc - s) < head)
+        head = dc - s;
+    budget = W_IP - head - 2;
+
+    /* tail: earliest group boundary (or "::") after head that fits */
+    best = len;
+    for (size_t i = head + 1; i < len; i++) {
+        int boundary = (s[i - 1] == ':' && s[i] != ':') ||
+                       (s[i] == ':' && s[i + 1] == ':');
+        if (boundary && len - i <= budget) {
+            best = i;
+            break;
+        }
+    }
+    if (best == len)                /* no tail fits: just cut it */
+        snprintf(out, n, "%.*s..", W_IP - 2, s);
+    else
+        snprintf(out, n, "%.*s..%s", (int)head, s, s + best);
+}
+
 #define IPPROTO_NUM_ICMP6    58
 #define IP6_HDR_LEN          40
 #define IP6_NH_HOPOPTS       0
@@ -886,9 +935,13 @@ static void decode_ipv6(struct pkt *pk, const u_char *ip6, size_t caplen)
     }
     pk->v6 = 1;
     strcpy(pk->proto, "IPv6");      /* until a known transport is found */
-    fmt_ip6(src, sizeof src, ip6 + 8);
-    fmt_ip6(dst, sizeof dst, ip6 + 24);
-    snprintf(pk->addr6, sizeof pk->addr6, "[%s > %s]", src, dst);
+    fmt_ip6_short(pk->sip, sizeof pk->sip, ip6 + 8);
+    fmt_ip6_short(pk->dip, sizeof pk->dip, ip6 + 24);
+    if (verbose) {                  /* full addresses at the end of the line */
+        fmt_ip6(src, sizeof src, ip6 + 8);
+        fmt_ip6(dst, sizeof dst, ip6 + 24);
+        snprintf(pk->addr6, sizeof pk->addr6, "[%s > %s]", src, dst);
+    }
 
     /* walk the extension headers that may precede the transport header */
     uint8_t nh = ip6[6];
@@ -1197,7 +1250,8 @@ static void usage(const char *prog)
             "       %s [-v] -r <file.pcap> [bpf filter expression...]\n"
             "\n"
             "  -r file  read packets from a pcap file ('-' for stdin)\n"
-            "  -v       verbose: extra details (DNS answers, UDP payload length)\n\n",
+            "  -v       verbose: extra details (DNS answers, UDP payload length,\n"
+            "           full IPv6 addresses)\n\n",
             prog, prog);
 }
 
