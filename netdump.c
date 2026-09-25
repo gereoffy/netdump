@@ -468,7 +468,9 @@ static int fmt_dns(char *out, size_t n, const u_char *d, size_t len,
  * QUIC (UDP 443): returns 0 if the fixed bit is not set (then it's
  * something else on port 443). For long header packets out gets the
  * packet type (Initial = connection start, like a TCP SYN); short header
- * (data) packets leave out untouched.
+ * (data) packets leave out untouched. The caller shows their UDP payload
+ * length: the real QUIC payload is encrypted and its header length can't
+ * be known from outside, so that's the best available size.
  */
 static int fmt_quic(char *out, size_t n, const u_char *d, size_t len)
 {
@@ -796,6 +798,8 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                         strcpy(proto, "QUIC");
                         if (tmp[0])
                             strcpy(info, tmp);
+                        else if (ulen)  /* data: size shown even without -v */
+                            snprintf(info, sizeof info, "(%zu)", ulen);
                     }
                 }
             }

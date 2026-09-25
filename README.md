@@ -172,8 +172,11 @@ Only DNS over UDP is decoded.
 
 For QUIC (UDP port 443 with the QUIC fixed bit set), long header packets show
 their type: `Initial` starts a connection (like a TCP SYN), then `Handshake`;
-also `0-RTT`, `Retry` and `VersionNeg`. Data packets show nothing (with `-v`,
-the payload length). Other traffic on UDP 443 (e.g. DTLS VPNs) stays `UDP`.
+also `0-RTT`, `Retry` and `VersionNeg`. Data packets show their size, e.g.
+`(1252)`, like TCP. This is the UDP payload length: QUIC encrypts almost
+everything, including the length of its own header, so the real payload
+(roughly 25-40 bytes less) can't be known from outside. Other traffic on
+UDP 443 (e.g. DTLS VPNs) stays `UDP`.
 
 For ARP, the info is the kind of message:
 
