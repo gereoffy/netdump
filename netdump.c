@@ -780,7 +780,8 @@ static void print_stats(void)
 /* per-packet output fields and values for the statistics */
 struct pkt {
     char vlan[8], smac[18], dmac[18], sip[16], dip[16], proto[16];
-    char sport[8], dport[8], icmp[32], info[320], addr6[96];
+    char sport[8], dport[8], info[320], addr6[96];
+    char type[32];      /* ICMP/ARP type, shown in place of the ports */
     int v6, tcp_flags, dns_resp, mdns_resp;
     unsigned dns_rcode;
 };
@@ -1026,7 +1027,7 @@ static void decode_ipv6(struct pkt *pk, const u_char *ip6, size_t caplen)
     if (nh == IPPROTO_NUM_ICMP6) {
         strcpy(pk->proto, "ICMP");
         if (first_frag && caplen >= pos + 2) {
-            fmt_icmp6(pk->icmp, sizeof pk->icmp, ip6[pos], ip6[pos + 1]);
+            fmt_icmp6(pk->type, sizeof pk->type, ip6[pos], ip6[pos + 1]);
             fmt_icmp6_info(pk->info, sizeof pk->info, ip6 + pos, caplen - pos);
         }
     } else if (nh == IPPROTO_NUM_TCP || nh == IPPROTO_NUM_UDP) {
@@ -1052,8 +1053,8 @@ static void count_stats(const struct pkt *pk, const char *label)
         if (pk->tcp_flags & TCP_RST)
             count(&st_tcp, "RST");
     }
-    if (!strcmp(pk->proto, "ARP") && pk->info[0])
-        count(&st_arp, pk->info);
+    if (!strcmp(pk->proto, "ARP") && pk->type[0])
+        count(&st_arp, pk->type);
     if (!strcmp(pk->proto, "DHCP"))
         count(&st_dhcp, pk->info);
     if (!strcmp(pk->proto, "DNS")) {
@@ -1077,8 +1078,8 @@ static void count_stats(const struct pkt *pk, const char *label)
         else
             count(&st_quic, pk->info);
     }
-    if (pk->icmp[0])
-        count(pk->v6 ? &st_icmp6 : &st_icmp, pk->icmp);
+    if (!strcmp(pk->proto, "ICMP") && pk->type[0])
+        count(pk->v6 ? &st_icmp6 : &st_icmp, pk->type);
 }
 
 static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
@@ -1169,7 +1170,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
                 decode_tcp_udp(&pk, p, l4, l4cap,
                                (long)rd16(ip + 2) - (long)ihl);
             if (p == IPPROTO_NUM_ICMP && l4cap >= 2) {
-                fmt_icmp(pk.icmp, sizeof pk.icmp, l4[0], l4[1]);
+                fmt_icmp(pk.type, sizeof pk.type, l4[0], l4[1]);
                 fmt_icmp_error(pk.info, sizeof pk.info, l4, l4cap);
             }
         }
@@ -1184,15 +1185,15 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
             fmt_ip(pk.sip, sizeof pk.sip, spa);
             fmt_ip(pk.dip, sizeof pk.dip, tpa);
             if (op == ARP_OP_REQUEST && !(spa[0] | spa[1] | spa[2] | spa[3]))
-                strcpy(pk.info, "probe");      /* RFC 5227 address check */
+                strcpy(pk.type, "probe");      /* RFC 5227 address check */
             else if (!memcmp(spa, tpa, 4))
-                strcpy(pk.info, "announce");   /* gratuitous ARP */
+                strcpy(pk.type, "announce");   /* gratuitous ARP */
             else if (op == ARP_OP_REQUEST)
-                strcpy(pk.info, "request");
+                strcpy(pk.type, "request");
             else if (op == ARP_OP_REPLY)
-                strcpy(pk.info, "reply");
+                strcpy(pk.type, "reply");
             else
-                snprintf(pk.info, sizeof pk.info, "op-%u", op);
+                snprintf(pk.type, sizeof pk.type, "op-%u", op);
         }
     } else if (etype == ETHERTYPE_IPV6) {
         decode_ipv6(&pk, pkt + off, caplen - off);
@@ -1210,10 +1211,10 @@ out:;
     printf("%-*s %-*s %-*s  %-*s %-*s %-*s ",
            W_VLAN, pk.vlan, W_MAC, pk.smac, W_MAC, pk.dmac,
            W_IP, pk.sip, W_IP, pk.dip, W_PROTO, label);
-    /* ICMP type replaces the two port columns */
-    if (pk.icmp[0])
+    /* ICMP/ARP type replaces the two port columns */
+    if (pk.type[0])
         printf(pk.info[0] || pk.addr6[0] ? "%-*s" : "%.*s%s",
-               2 * W_PORT + 1, pk.icmp, "");
+               2 * W_PORT + 1, pk.type, "");
     else
         printf("%*s %*s", W_PORT, pk.sport, W_PORT, pk.dport);
     if (pk.info[0])

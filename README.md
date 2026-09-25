@@ -80,7 +80,7 @@ vlan src-mac           dst-mac            src-ip          dst-ip          proto 
 100  11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         8.8.8.8         UDP     5353    53
 4094 11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         5.6.7.8         ICMP   echo-req
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff  1.2.3.4         5.6.7.8         47
-     11:22:33:44:55:66 ff:ff:ff:ff:ff:ff  192.168.1.1     192.168.1.254   ARP                request
+     11:22:33:44:55:66 ff:ff:ff:ff:ff:ff  192.168.1.1     192.168.1.254   ARP    request
      11:22:33:44:55:66 aa:bb:cc:dd:ee:ff                                  IPv6
      11:22:33:44:55:66 01:80:c2:00:00:00                                  STP
 ```
@@ -97,7 +97,7 @@ vlan src-mac           dst-mac            src-ip          dst-ip          proto 
 | `dport`   | destination port (TCP/UDP only) |
 
 After the ports, free-form protocol-specific info may follow (see below).
-For ICMP the two port columns hold the ICMP type instead.
+For ICMP and ARP the two port columns hold the message type instead.
 
 Values of the `proto` column:
 
@@ -259,7 +259,7 @@ Other ICMPv6 types: `echo-req`, `echo-reply`, `net-unr`, `adm-prohib`,
 In the summary, TCP, DNS, mDNS and QUIC counters include IPv6; ICMPv6 has
 its own `ICMP6` line (NS and NA always shown).
 
-For ARP, the info is the kind of message:
+For ARP, the kind of message is shown in place of the ports, like the ICMP type:
 
 | Info       | Meaning |
 |------------|---------|
