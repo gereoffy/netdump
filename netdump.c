@@ -2,6 +2,7 @@
  * netdump - minimal tcpdump alternative (libpcap)
  *
  * Usage: netdump <interface> [bpf filter expression...]
+ *        netdump -r <file.pcap> [bpf filter expression...]
  *
  * One line per packet, fixed-width columns:
  *   vlan src-mac dst-mac src-ip dst-ip proto sport dport [info]
@@ -491,7 +492,10 @@ static int list_interfaces(void)
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "Usage: %s <interface> [bpf filter expression...]\n\n", prog);
+    fprintf(stderr,
+            "Usage: %s <interface> [bpf filter expression...]\n"
+            "       %s -r <file.pcap> [bpf filter expression...]\n\n",
+            prog, prog);
 }
 
 /* join argv[from..argc-1] with spaces into a malloc'd string */
@@ -523,36 +527,52 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    const char *dev = argv[1];
+    int offline = !strcmp(argv[1], "-r");
+    int filter_from = offline ? 3 : 2;
+    int rc;
 
-    handle = pcap_create(dev, errbuf);
-    if (!handle) {
-        fprintf(stderr, "%s: %s\n", dev, errbuf);
+    if (offline && argc < 3) {
+        usage(argv[0]);
         return 1;
     }
-    pcap_set_snaplen(handle, SNAPLEN);
-    pcap_set_promisc(handle, 1);
-    pcap_set_immediate_mode(handle, 1);
-    pcap_set_timeout(handle, 100);
+    const char *dev = offline ? argv[2] : argv[1];
 
-    int rc = pcap_activate(handle);
-    if (rc < 0) {
-        fprintf(stderr, "%s: %s\n", dev, pcap_geterr(handle));
-        pcap_close(handle);
-        return 1;
-    } else if (rc > 0) {
-        fprintf(stderr, "%s: warning: %s\n", dev, pcap_geterr(handle));
+    if (offline) {
+        handle = pcap_open_offline(dev, errbuf);   /* "-" reads stdin */
+        if (!handle) {
+            fprintf(stderr, "%s\n", errbuf);
+            return 1;
+        }
+    } else {
+        handle = pcap_create(dev, errbuf);
+        if (!handle) {
+            fprintf(stderr, "%s: %s\n", dev, errbuf);
+            return 1;
+        }
+        pcap_set_snaplen(handle, SNAPLEN);
+        pcap_set_promisc(handle, 1);
+        pcap_set_immediate_mode(handle, 1);
+        pcap_set_timeout(handle, 100);
+
+        rc = pcap_activate(handle);
+        if (rc < 0) {
+            fprintf(stderr, "%s: %s\n", dev, pcap_geterr(handle));
+            pcap_close(handle);
+            return 1;
+        } else if (rc > 0) {
+            fprintf(stderr, "%s: warning: %s\n", dev, pcap_geterr(handle));
+        }
     }
 
     if (pcap_datalink(handle) != DLT_EN10MB) {
-        fprintf(stderr, "%s: not an Ethernet interface (link type %s)\n",
+        fprintf(stderr, "%s: not Ethernet (link type %s)\n",
                 dev, pcap_datalink_val_to_name(pcap_datalink(handle)));
         pcap_close(handle);
         return 1;
     }
 
-    if (argc > 2) {
-        char *expr = join_args(argc, argv, 2);
+    if (argc > filter_from) {
+        char *expr = join_args(argc, argv, filter_from);
         struct bpf_program fp;
         if (!expr) {
             perror("malloc");
@@ -577,7 +597,7 @@ int main(int argc, char **argv)
     sigaction(SIGTERM, &sa, NULL);
 
     setvbuf(stdout, NULL, _IOLBF, 0);
-    fprintf(stderr, "listening on %s\n", dev);
+    fprintf(stderr, "%s %s\n", offline ? "reading from" : "listening on", dev);
     print_header();
 
     rc = pcap_loop(handle, -1, handle_packet, NULL);
@@ -585,7 +605,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "pcap_loop: %s\n", pcap_geterr(handle));
 
     struct pcap_stat st;
-    if (pcap_stats(handle, &st) == 0)
+    if (!offline && pcap_stats(handle, &st) == 0)
         fprintf(stderr, "\n%u packets received, %u dropped by kernel\n",
                 st.ps_recv, st.ps_drop);
 

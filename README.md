@@ -22,12 +22,15 @@ make
 
 ```
 netdump <interface> [bpf filter expression...]
+netdump -r <file.pcap> [bpf filter expression...]
 ```
 
 - The interface is required. Without it (or with `-h` / `--help`) the program
   lists the available interfaces with their IPv4 addresses and exits.
 - Any arguments after the interface form an optional BPF filter, using the same
   syntax as tcpdump (`man pcap-filter`).
+- `-r` reads packets from a pcap file (e.g. one saved with `tcpdump -w` or
+  Wireshark) instead of capturing; `-r -` reads from stdin. No root needed.
 - Capturing requires root (or `CAP_NET_RAW` + `CAP_NET_ADMIN` on Linux, read
   access to the `/dev/bpf*` devices on macOS).
 - Ctrl-C stops the capture and prints the number of packets received and
@@ -40,6 +43,7 @@ sudo ./netdump en0
 sudo ./netdump eth0 tcp port 443
 sudo ./netdump eth0 vlan and host 10.0.0.1
 sudo ./netdump en0 arp or icmp
+./netdump -r capture.pcap udp port 67 or udp port 68
 ```
 
 ## Output
