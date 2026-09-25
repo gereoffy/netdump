@@ -4,7 +4,7 @@
  * Usage: netdump <interface> [bpf filter expression...]
  *
  * One line per packet, fixed-width columns:
- *   vlan src-mac dst-mac src-ip dst-ip proto sport dport
+ *   vlan src-mac dst-mac src-ip dst-ip proto sport dport flags
  *
  * No name resolution: addresses and ports are always numeric.
  * Supports Linux and macOS, Ethernet interfaces, IPv4 (+ARP).
@@ -61,6 +61,7 @@
 #define W_IP    15
 #define W_PROTO 6
 #define W_PORT  5
+#define W_FLAGS 8
 
 static pcap_t *handle;
 
@@ -89,10 +90,10 @@ static void fmt_ip(char *out, size_t n, const u_char *p)
 
 static void print_header(void)
 {
-    printf("%-*s %-*s %-*s %-*s %-*s %-*s %*s %*s\n",
+    printf("%-*s %-*s %-*s %-*s %-*s %-*s %*s %*s %-*s\n",
            W_VLAN, "vlan", W_MAC, "src-mac", W_MAC, "dst-mac",
            W_IP, "src-ip", W_IP, "dst-ip", W_PROTO, "proto",
-           W_PORT, "sport", W_PORT, "dport");
+           W_PORT, "sport", W_PORT, "dport", W_FLAGS, "flags");
 }
 
 static const char *icmp_unreach_names[] = {
@@ -136,6 +137,19 @@ static const char *icmp_type_names[] = {
     [18] = "mask-reply",
 };
 
+/* TCP flags in tcpdump notation and order: F S R P . U E W */
+static void fmt_tcp_flags(char *out, uint8_t f)
+{
+    static const struct { uint8_t bit; char c; } tbl[] = {
+        { 0x01, 'F' }, { 0x02, 'S' }, { 0x04, 'R' }, { 0x08, 'P' },
+        { 0x10, '.' }, { 0x20, 'U' }, { 0x40, 'E' }, { 0x80, 'W' },
+    };
+    for (size_t i = 0; i < sizeof tbl / sizeof tbl[0]; i++)
+        if (f & tbl[i].bit)
+            *out++ = tbl[i].c;
+    *out = '\0';
+}
+
 #define NELEM(a) (sizeof(a) / sizeof((a)[0]))
 
 /* ICMP type/code as short text (fits the port columns); unknown ones as "type/code" */
@@ -176,7 +190,7 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
     char vlan[8] = "", smac[18] = "", dmac[18] = "";
     char sip[16] = "", dip[16] = "", proto[16] = "";
     char sport[8] = "", dport[8] = "";
-    char icmp[32] = "";
+    char icmp[32] = "", flags[9] = "";
 
     size_t caplen = h->caplen;
     if (caplen < ETH_HDR_LEN)
@@ -260,6 +274,8 @@ static void handle_packet(u_char *user, const struct pcap_pkthdr *h,
             const u_char *l4 = ip + ihl;
             snprintf(sport, sizeof sport, "%u", rd16(l4));
             snprintf(dport, sizeof dport, "%u", rd16(l4 + 2));
+            if (p == IPPROTO_NUM_TCP && caplen >= off + ihl + 14)
+                fmt_tcp_flags(flags, l4[13]);
         }
         if (p == IPPROTO_NUM_ICMP && frag_off == 0 && ihl >= 20 &&
             caplen >= off + ihl + 2) {
@@ -287,9 +303,10 @@ out:
            W_IP, sip, W_IP, dip, W_PROTO, proto);
     /* ICMP type replaces the two port columns */
     if (icmp[0])
-        printf("%-*s\n", 2 * W_PORT + 1, icmp);
+        printf("%-*s", 2 * W_PORT + 1, icmp);
     else
-        printf("%*s %*s\n", W_PORT, sport, W_PORT, dport);
+        printf("%*s %*s", W_PORT, sport, W_PORT, dport);
+    printf(" %-*s\n", W_FLAGS, flags);
 }
 
 /*
